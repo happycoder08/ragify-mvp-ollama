@@ -66,6 +66,31 @@ $env:RAGIFY_CHUNK_OVERLAP = '200'
 ```
 If your models cold-start slowly, increase timeout in the script or set `DEFAULT_TIMEOUT` higher.
 
+## Demo Setup (Client Presentations)
+
+For fast, impressive demos with pre-loaded sample documents:
+
+```powershell
+# 1. Generate demo documents
+& .\.venv\Scripts\python.exe scripts\setup_demo.py
+
+# 2. Start server with optimized chunk size for better answers
+$env:RAGIFY_CHUNK_SIZE = '800'
+$env:RAGIFY_CHUNK_OVERLAP = '150'
+& .\.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+# 3. Open http://localhost:8000 and upload the generated .txt files
+# 4. Ask sample questions to showcase accuracy
+```
+
+**Demo Questions to Show:**
+- *"What is our late fee policy?"*
+- *"Can late fees be waived? Under what conditions?"*
+- *"How long is the appeals process?"*
+- *"If a payment is 45 days late, what happens?"*
+
+See `DEMO_GUIDE.md` for complete demo strategy and client talking points.
+
 ## Health check
 ```
 GET /health
