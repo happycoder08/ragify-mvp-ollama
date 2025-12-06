@@ -47,6 +47,29 @@ GET /health
 ```
 Returns status, mock flag, and current Ollama timeout.
 
+## Cleanup & Reset
+
+### Option 1: Reset via API
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/api/reset" -Method Post
+```
+Clears all indexed embeddings and uploads. Server must be running.
+
+### Option 2: Run cleanup script
+```powershell
+& .\.venv\Scripts\python.exe scripts\cleanup_vectorstore.py
+```
+Interactive cleanup for both vector store and uploaded files.
+
+### Option 3: Manual cleanup
+```powershell
+# Remove vector store directory
+Remove-Item -Recurse -Force vectorstore/
+
+# Remove uploads directory
+Remove-Item -Recurse -Force app/uploads/
+```
+
 ## Notes
-- Vector store persists to `vectorstore/`; uploads go to `uploads/` (ignored by git).
+- Vector store persists to `vectorstore/`; uploads go to `app/uploads/` (ignored by git).
 - Increase `RAGIFY_OLLAMA_TIMEOUT` (e.g., `600`) if chat/embeddings need longer.

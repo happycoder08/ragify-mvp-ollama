@@ -10,7 +10,7 @@ import time
 import json
 
 from app.services import ingestion
-from app.services.rag_service import add_documents, query_collection, is_mock_mode, REQUEST_TIMEOUT
+from app.services.rag_service import add_documents, query_collection, is_mock_mode, REQUEST_TIMEOUT, reset_collection
 
 import os
 
@@ -111,3 +111,17 @@ async def query(payload: QueryRequest):
             yield json.dumps({"token": token}) + "\n"
     
     return StreamingResponse(stream_response(), media_type="application/x-ndjson")
+
+
+@app.post("/api/reset")
+async def reset():
+    """
+    Reset the vector store and clear all indexed documents.
+    WARNING: This is destructive and cannot be undone!
+    """
+    try:
+        reset_collection()
+        return {"status": "ok", "message": "Vector store reset successfully"}
+    except Exception as e:
+        logger.exception("Reset failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")

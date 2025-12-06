@@ -213,3 +213,41 @@ Question: {question}
             f"Failed to call Ollama chat API at {OLLAMA_BASE_URL}. "
             f"Ensure Ollama is running and the 'llama3' model is available. Original error: {e}"
         )
+
+
+def reset_collection() -> None:
+    """
+    Reset the vector store by clearing all documents and reinitializing.
+    Useful for testing or starting fresh with new documents.
+    """
+    global chroma_client, collection
+    
+    logger.info("Resetting ChromaDB collection...")
+    
+    # Close existing connections
+    if chroma_client is not None:
+        try:
+            chroma_client.delete_collection("documents")
+            logger.info("Deleted existing collection")
+        except Exception as e:
+            logger.warning("Could not delete collection: %s", e)
+        
+        try:
+            chroma_client = None
+            collection = None
+        except Exception as e:
+            logger.warning("Error closing client: %s", e)
+    
+    # Delete persisted files
+    import shutil
+    if os.path.exists(VECTOR_DIR):
+        try:
+            shutil.rmtree(VECTOR_DIR)
+            logger.info("Removed vector store directory: %s", VECTOR_DIR)
+        except Exception as e:
+            logger.warning("Could not remove vector store directory: %s", e)
+            raise RuntimeError(f"Failed to clean vector store: {e}")
+    
+    # Reinitialize on next use via lazy loading
+    logger.info("Collection reset complete. Will reinitialize on next index operation.")
+
