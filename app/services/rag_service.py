@@ -21,9 +21,20 @@ logger = logging.getLogger(__name__)
 chroma_client = None
 collection = None
 
+# Persistent async HTTP client for connection pooling
+_http_client: httpx.AsyncClient = None
+
 
 def is_mock_mode() -> bool:
     return os.getenv("RAGIFY_MOCK", "0") == "1"
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    """Get or create persistent async HTTP client for pooled connections."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
+    return _http_client
 
 
 def _get_collection():
@@ -41,6 +52,7 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     """
     Get embeddings for a list of texts using a local Ollama embedding model.
     Model: nomic-embed-text (run `ollama pull nomic-embed-text` first).
+    Uses persistent async client for connection pooling.
     """
     logger.info("Embedding %d texts via Ollama (timeout=%ds) mock=%s", len(texts), REQUEST_TIMEOUT, is_mock_mode())
     # If mock mode is enabled, return deterministic small vectors to avoid Ollama.
@@ -48,17 +60,18 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
         emb = [0.0] * 8
         return [list(emb) for _ in texts]
 
+    client = await _get_http_client()
+    
     async def embed_one(idx: int, text: str) -> List[float]:
         """Embed a single text with error handling."""
         payload = {"model": "nomic-embed-text", "input": text}
         logger.debug("Requesting embedding for text %d (len=%d)", idx, len(text))
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                resp = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/embeddings",
-                    json=payload,
-                )
-                resp.raise_for_status()
+            resp = await client.post(
+                f"{OLLAMA_BASE_URL}/api/embeddings",
+                json=payload,
+            )
+            resp.raise_for_status()
         except httpx.HTTPError as e:
             logger.exception("Embedding request failed for text %d: %s", idx, e)
             raise RuntimeError(
@@ -72,7 +85,7 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
         logger.debug("Received embedding for text %d (len=%d)", idx, len(emb))
         return emb
     
-    # Parallelize all embedding calls
+    # Parallelize all embedding calls using persistent client connection pool
     import asyncio
     embeddings = await asyncio.gather(*[embed_one(i, t) for i, t in enumerate(texts)])
     return embeddings
@@ -168,6 +181,7 @@ async def _call_chat_model(question: str, context: str) -> AsyncGenerator[str, N
     """
     Call a local Ollama chat model (llama3) with the retrieved context.
     Yields answer tokens as they arrive for streaming.
+    Uses persistent async client for connection pooling.
     Run `ollama pull llama3` first.
     """
     prompt = f"""
@@ -188,25 +202,26 @@ Question: {question}
         yield "(mocked) This is a canned answer used for local UI testing."
         return
 
+    client = await _get_http_client()
+    
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            async with client.stream(
-                "POST",
-                f"{OLLAMA_BASE_URL}/api/generate",
-                json={"model": "llama3", "prompt": prompt, "stream": True},
-            ) as resp:
-                resp.raise_for_status()
-                
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    token = data.get("response", "")
-                    if token:
-                        yield token
-                    if data.get("done"):
-                        break
-                        
+        async with client.stream(
+            "POST",
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={"model": "llama3", "prompt": prompt, "stream": True},
+        ) as resp:
+            resp.raise_for_status()
+            
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                data = json.loads(line)
+                token = data.get("response", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    break
+                    
     except httpx.HTTPError as e:
         logger.exception("Chat generation request failed: %s", e)
         raise RuntimeError(

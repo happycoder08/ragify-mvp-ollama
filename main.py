@@ -10,6 +10,7 @@ import time
 import json
 
 from app.services import ingestion
+from app.services import rag_service
 from app.services.rag_service import add_documents, query_collection, is_mock_mode, REQUEST_TIMEOUT, reset_collection
 
 import os
@@ -17,6 +18,14 @@ import os
 app = FastAPI(title="RAGify AI – Ollama RAG Backend")
 logger = logging.getLogger("main")
 logging.basicConfig(level=logging.INFO)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close HTTP client on server shutdown."""
+    if rag_service._http_client is not None and not rag_service._http_client.is_closed:
+        await rag_service._http_client.aclose()
+        logger.info("HTTP client closed")
 
 # Allow simple CORS for local demo / front-end
 app.add_middleware(
