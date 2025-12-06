@@ -56,9 +56,9 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     """
     Get embeddings for a list of texts using a local Ollama embedding model.
     Model: nomic-embed-text (run `ollama pull nomic-embed-text` first).
-    Uses persistent async client and batch requests for efficiency.
+    Uses persistent async client and parallel requests with connection pooling.
     
-    For queries, uses embedding cache to avoid redundant requests.
+    For single queries, uses embedding cache to avoid redundant requests.
     """
     logger.info("Embedding %d texts via Ollama (timeout=%ds) mock=%s", len(texts), REQUEST_TIMEOUT, is_mock_mode())
     # If mock mode is enabled, return deterministic small vectors to avoid Ollama.
@@ -76,39 +76,39 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
             logger.debug("Cache hit for embedding: %s...", text[:50])
             return [_embedding_cache[text]]
     
-    # Batch embeddings request (more efficient than parallel individual requests)
-    payload = {"model": "nomic-embed-text", "prompt": texts}
-    logger.debug("Requesting batch embeddings for %d texts", len(texts))
-    
-    try:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/api/embeddings",
-            json=payload,
-        )
-        resp.raise_for_status()
+    # Parallel embedding requests using persistent client (connection pooled)
+    async def embed_one(idx: int, text: str) -> List[float]:
+        """Embed a single text with error handling."""
+        payload = {"model": "nomic-embed-text", "prompt": text}
+        logger.debug("Requesting embedding for text %d (len=%d)", idx, len(text))
+        try:
+            resp = await client.post(
+                f"{OLLAMA_BASE_URL}/api/embeddings",
+                json=payload,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            logger.exception("Embedding request failed for text %d: %s", idx, e)
+            raise RuntimeError(
+                f"Failed to get embeddings from Ollama at {OLLAMA_BASE_URL}. "
+                f"Check that Ollama is running and the model 'nomic-embed-text' is pulled. Original error: {e}"
+            )
         data = resp.json()
+        emb = data.get("embedding")
+        if emb is None:
+            raise RuntimeError("No embedding returned from Ollama.")
+        logger.debug("Received embedding for text %d (len=%d)", idx, len(emb))
+        return emb
+    
+    # Parallelize all embedding calls using persistent client connection pool
+    import asyncio
+    embeddings = await asyncio.gather(*[embed_one(i, t) for i, t in enumerate(texts)])
+    
+    # Cache single-text embeddings for query optimization
+    if len(texts) == 1:
+        _embedding_cache[texts[0]] = embeddings[0]
         
-        # Ollama returns either "embedding" or "embeddings" depending on input
-        if "embedding" in data:
-            embeddings = [data["embedding"]]
-        elif "embeddings" in data:
-            embeddings = data["embeddings"]
-        else:
-            raise RuntimeError("No embeddings returned from Ollama.")
-            
-        # Cache single-text embeddings for query optimization
-        if len(texts) == 1:
-            _embedding_cache[texts[0]] = embeddings[0]
-            
-        logger.debug("Generated %d embeddings", len(embeddings))
-        return embeddings
-        
-    except httpx.HTTPError as e:
-        logger.exception("Embedding request failed: %s", e)
-        raise RuntimeError(
-            f"Failed to get embeddings from Ollama at {OLLAMA_BASE_URL}. "
-            f"Check that Ollama is running and the model 'nomic-embed-text' is pulled. Original error: {e}"
-        )
+    return embeddings
 
 
 async def add_documents(chunks: List[str], source_filename: str) -> int:
