@@ -1,12 +1,13 @@
 from typing import List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
 import time
+import json
 
 from app.services import ingestion
 from app.services.rag_service import add_documents, query_collection, is_mock_mode, REQUEST_TIMEOUT
@@ -86,17 +87,27 @@ async def upload(files: List[UploadFile] = File(...)):
 
         t2 = time.time()
         logger.info("Indexing chunks for %s...", saved_path)
-        num = add_documents(chunks, os.path.basename(saved_path))
+        num = await add_documents(chunks, os.path.basename(saved_path))
         logger.info("Indexed %d chunks for %s (took %.2fs)", num, saved_path, time.time() - t2)
         total_chunks += num
 
     return {"status": "ok", "indexed_chunks": total_chunks}
 
 
-@app.post("/api/query", response_model=QueryResponse)
+@app.post("/api/query")
 async def query(payload: QueryRequest):
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    answer, sources = query_collection(payload.question, payload.top_k)
-    return QueryResponse(answer=answer, sources=sources)
+    answer_gen, sources = await query_collection(payload.question, payload.top_k)
+    
+    # Stream the answer tokens back to client
+    async def stream_response():
+        # First send the sources as a JSON prefix
+        yield json.dumps({"sources": sources}) + "\n"
+        
+        # Then stream answer tokens
+        async for token in answer_gen:
+            yield json.dumps({"token": token}) + "\n"
+    
+    return StreamingResponse(stream_response(), media_type="application/x-ndjson")

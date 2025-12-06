@@ -1,6 +1,6 @@
-from typing import List, Tuple
+from typing import List, Tuple, AsyncGenerator
 import json
-import requests
+import httpx
 import chromadb
 from chromadb.config import Settings
 
@@ -37,7 +37,7 @@ def _get_collection():
     return collection
 
 
-def embed_texts(texts: List[str]) -> List[List[float]]:
+async def embed_texts(texts: List[str]) -> List[List[float]]:
     """
     Get embeddings for a list of texts using a local Ollama embedding model.
     Model: nomic-embed-text (run `ollama pull nomic-embed-text` first).
@@ -48,18 +48,18 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
         emb = [0.0] * 8
         return [list(emb) for _ in texts]
 
-    embeddings: List[List[float]] = []
-    for idx, t in enumerate(texts):
-        payload = {"model": "nomic-embed-text", "input": t}
-        logger.debug("Requesting embedding for text %d (len=%d)", idx, len(t))
+    async def embed_one(idx: int, text: str) -> List[float]:
+        """Embed a single text with error handling."""
+        payload = {"model": "nomic-embed-text", "input": text}
+        logger.debug("Requesting embedding for text %d (len=%d)", idx, len(text))
         try:
-            resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/embeddings",
-                json=payload,
-                timeout=REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
+            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{OLLAMA_BASE_URL}/api/embeddings",
+                    json=payload,
+                )
+                resp.raise_for_status()
+        except httpx.HTTPError as e:
             logger.exception("Embedding request failed for text %d: %s", idx, e)
             raise RuntimeError(
                 f"Failed to get embeddings from Ollama at {OLLAMA_BASE_URL}. "
@@ -70,11 +70,15 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
         if emb is None:
             raise RuntimeError("No embedding returned from Ollama.")
         logger.debug("Received embedding for text %d (len=%d)", idx, len(emb))
-        embeddings.append(emb)
+        return emb
+    
+    # Parallelize all embedding calls
+    import asyncio
+    embeddings = await asyncio.gather(*[embed_one(i, t) for i, t in enumerate(texts)])
     return embeddings
 
 
-def add_documents(chunks: List[str], source_filename: str) -> int:
+async def add_documents(chunks: List[str], source_filename: str) -> int:
     """
     Add chunks for a given source file into the Chroma collection.
     Returns number of chunks indexed.
@@ -97,7 +101,7 @@ def add_documents(chunks: List[str], source_filename: str) -> int:
         collection = chroma_client.get_or_create_collection("documents")
 
     logger.info("Indexing %d chunks from %s", len(chunks), source_filename)
-    embeddings = embed_texts(chunks)
+    embeddings = await embed_texts(chunks)
     base_id = source_filename.replace(" ", "_")
     ids = [f"{base_id}_{i}" for i in range(len(chunks))]
     metadatas = [{"source_file": source_filename, "chunk": i} for i in range(len(chunks))]
@@ -111,22 +115,21 @@ def add_documents(chunks: List[str], source_filename: str) -> int:
     return len(chunks)
 
 
-def query_collection(question: str, top_k: int = 4) -> Tuple[str, List[str]]:
+async def query_collection(question: str, top_k: int = 4) -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Perform a similarity search and answer the question using retrieved context.
-    Returns (answer, list_of_source_files).
+    Returns (answer_generator, list_of_source_files) where answer_generator yields tokens.
     """
     logger.info("Query received: %s", question)
 
     # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
     if is_mock_mode():
-        return (
-            "(mocked) This is a canned answer used for local UI testing.",
-            [],
-        )
+        async def mock_gen():
+            yield "(mocked) This is a canned answer used for local UI testing."
+        return mock_gen(), []
 
     # embed question
-    q_embedding = embed_texts([question])[0]
+    q_embedding = (await embed_texts([question]))[0]
 
     results = _get_collection().query(
         query_embeddings=[q_embedding],
@@ -137,10 +140,9 @@ def query_collection(question: str, top_k: int = 4) -> Tuple[str, List[str]]:
     metas = results.get("metadatas", [[]])[0]
 
     if not docs:
-        return (
-            "I could not find anything relevant in the indexed documents.",
-            [],
-        )
+        async def not_found_gen():
+            yield "I could not find anything relevant in the indexed documents."
+        return not_found_gen(), []
 
     context_pieces: List[str] = []
     sources: List[str] = []
@@ -158,13 +160,14 @@ def query_collection(question: str, top_k: int = 4) -> Tuple[str, List[str]]:
             dedup_sources.append(s)
 
     context = "\n\n".join(context_pieces)
-    answer = _call_chat_model(question, context)
-    return answer, dedup_sources
+    answer_gen = _call_chat_model(question, context)
+    return answer_gen, dedup_sources
 
 
-def _call_chat_model(question: str, context: str) -> str:
+async def _call_chat_model(question: str, context: str) -> AsyncGenerator[str, None]:
     """
     Call a local Ollama chat model (llama3) with the retrieved context.
+    Yields answer tokens as they arrive for streaming.
     Run `ollama pull llama3` first.
     """
     prompt = f"""
@@ -179,34 +182,34 @@ Question: {question}
 
     # Streamed response from Ollama
     logger.info("Calling chat model (llama3) for question (len=%d) with context length %d mock=%s", len(question), len(context), is_mock_mode())
+    
+    # If mock mode, yield canned response immediately
+    if is_mock_mode():
+        yield "(mocked) This is a canned answer used for local UI testing."
+        return
+
     try:
-        # If mock mode, return a canned response immediately
-        if is_mock_mode():
-            return "(mocked) This is a canned answer used for local UI testing."
-
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model": "llama3", "prompt": prompt, "stream": True},
-            stream=True,
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-
-    except requests.RequestException as e:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={"model": "llama3", "prompt": prompt, "stream": True},
+            ) as resp:
+                resp.raise_for_status()
+                
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    token = data.get("response", "")
+                    if token:
+                        yield token
+                    if data.get("done"):
+                        break
+                        
+    except httpx.HTTPError as e:
         logger.exception("Chat generation request failed: %s", e)
         raise RuntimeError(
             f"Failed to call Ollama chat API at {OLLAMA_BASE_URL}. "
             f"Ensure Ollama is running and the 'llama3' model is available. Original error: {e}"
         )
-
-    answer_chunks: List[str] = []
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        data = json.loads(line.decode("utf-8"))
-        token = data.get("response", "")
-        answer_chunks.append(token)
-        if data.get("done"):
-            break
-
-    return "".join(answer_chunks).strip()

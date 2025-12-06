@@ -37,15 +37,38 @@ def upload_sample() -> Any:
 def query_sample() -> Any:
     payload = {"question": "What is the late fee policy?", "top_k": 4}
     try:
-        resp = requests.post(f"{BASE}/api/query", json=payload, timeout=DEFAULT_TIMEOUT)
+        resp = requests.post(f"{BASE}/api/query", json=payload, timeout=DEFAULT_TIMEOUT, stream=True)
     except requests.exceptions.ReadTimeout:
         print(f"Query request timed out after {DEFAULT_TIMEOUT}s. The chat model or embedding call may be slow or unreachable.")
         raise
     print("Query HTTP status:", resp.status_code)
-    try:
-        print(json.dumps(resp.json(), indent=2))
-    except Exception:
+    
+    if resp.status_code != 200:
         print(resp.text)
+        return resp
+    
+    # Parse streaming NDJSON response
+    sources = []
+    answer_tokens = []
+    
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        try:
+            data = json.loads(line.decode('utf-8'))
+            if 'sources' in data:
+                sources = data['sources']
+            elif 'token' in data:
+                answer_tokens.append(data['token'])
+        except Exception as e:
+            print(f"Failed to parse line: {line}, error: {e}")
+    
+    answer = ''.join(answer_tokens).strip()
+    print(json.dumps({
+        "answer": answer,
+        "sources": sources
+    }, indent=2))
+    
     return resp
 
 
