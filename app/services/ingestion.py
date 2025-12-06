@@ -9,6 +9,12 @@ from ..config import UPLOAD_DIR
 
 logger = logging.getLogger(__name__)
 
+# Configurable chunk parameters for performance tuning
+# Smaller chunks = faster embeddings, more chunks to manage
+# Larger chunks = slower embeddings, better context preservation
+CHUNK_SIZE = int(os.getenv("RAGIFY_CHUNK_SIZE", "500"))  # reduced from 800
+CHUNK_OVERLAP = int(os.getenv("RAGIFY_CHUNK_OVERLAP", "100"))  # reduced from 200
+
 
 def save_upload(file_bytes: bytes, filename: str) -> str:
     """
@@ -62,10 +68,16 @@ def load_file_to_text(path: str) -> str:
         return read_txt(path)
 
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 200) -> List[str]:
+def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
     """
     Simple sliding-window character-based chunking.
+    Uses configurable defaults from environment variables.
     """
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE
+    if overlap is None:
+        overlap = CHUNK_OVERLAP
+        
     chunks: List[str] = []
     start = 0
     length = len(text)

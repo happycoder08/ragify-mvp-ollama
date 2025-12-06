@@ -20,6 +20,12 @@ pip install -r requirements.txt
 ```powershell
 # optional: extend Ollama timeout for cold starts
 $env:RAGIFY_OLLAMA_TIMEOUT = '300'
+
+# optional: tune chunk size for faster/better results (default: 500 chars, 100 overlap)
+# smaller chunks = faster embeddings; larger chunks = better context
+# $env:RAGIFY_CHUNK_SIZE = '300'
+# $env:RAGIFY_CHUNK_OVERLAP = '50'
+
 Remove-Item Env:RAGIFY_MOCK -ErrorAction SilentlyContinue
 
 # start server
@@ -33,6 +39,25 @@ $env:RAGIFY_MOCK = '1'
 & .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --log-level info
 ```
 Mock mode skips Ollama and Chroma calls for fast UI testing.
+
+## Performance Tuning
+
+**Embedding Cache**: Single-query embeddings are cached to avoid redundant requests.
+
+**Batch Embeddings**: Multiple chunks use batch API calls instead of parallel individual requests (more efficient).
+
+**Connection Pooling**: Persistent HTTP client reuses connections across all Ollama API calls.
+
+**Configurable Chunk Size**:
+```powershell
+# For faster performance (smaller chunks = faster embeddings)
+$env:RAGIFY_CHUNK_SIZE = '300'
+$env:RAGIFY_CHUNK_OVERLAP = '50'
+
+# For better context (larger chunks = slower but more coherent)
+$env:RAGIFY_CHUNK_SIZE = '1000'
+$env:RAGIFY_CHUNK_OVERLAP = '200'
+```
 
 ## Smoke test (programmatic)
 ```powershell
