@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Application artifacts
+uploads/
+vectorstore/
+
+# Build/test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.dylib
+
+# Local env files
+.env
+env.*
