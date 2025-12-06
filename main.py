@@ -9,7 +9,7 @@ import logging
 import time
 
 from app.services import ingestion
-from app.services.rag_service import add_documents, query_collection
+from app.services.rag_service import add_documents, query_collection, is_mock_mode, REQUEST_TIMEOUT
 
 import os
 
@@ -27,6 +27,15 @@ app.add_middleware(
 
 # Serve static frontend
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "mock_mode": is_mock_mode(),
+        "ollama_timeout": REQUEST_TIMEOUT,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

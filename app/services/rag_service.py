@@ -9,8 +9,8 @@ import os
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 # timeout (seconds) for requests to Ollama to avoid hanging the app
-# increased for local model cold-starts / debugging
-REQUEST_TIMEOUT = 60
+# configurable via env for slow model cold-starts
+REQUEST_TIMEOUT = int(os.getenv("RAGIFY_OLLAMA_TIMEOUT", "300"))
 
 import logging
 logger = logging.getLogger(__name__)
@@ -24,6 +24,17 @@ collection = None
 
 def is_mock_mode() -> bool:
     return os.getenv("RAGIFY_MOCK", "0") == "1"
+
+
+def _get_collection():
+    """Ensure Chroma client/collection are initialized and return collection."""
+    global chroma_client, collection
+    if chroma_client is None or collection is None:
+        chroma_client = chromadb.Client(
+            Settings(chroma_db_impl="duckdb+parquet", persist_directory=VECTOR_DIR)
+        )
+        collection = chroma_client.get_or_create_collection("documents")
+    return collection
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -106,10 +117,18 @@ def query_collection(question: str, top_k: int = 4) -> Tuple[str, List[str]]:
     Returns (answer, list_of_source_files).
     """
     logger.info("Query received: %s", question)
+
+    # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
+    if is_mock_mode():
+        return (
+            "(mocked) This is a canned answer used for local UI testing.",
+            [],
+        )
+
     # embed question
     q_embedding = embed_texts([question])[0]
 
-    results = collection.query(
+    results = _get_collection().query(
         query_embeddings=[q_embedding],
         n_results=top_k,
     )
