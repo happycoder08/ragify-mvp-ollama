@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAGify AI – Business Assistant Demo (Ollama)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-5xl mx-auto px-4 py-8">
+    <!-- Header -->
+    <header class="flex items-center justify-between mb-10">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">RAGify<span class="text-sky-400">AI</span></h1>
+        <p class="text-sm text-slate-400">Private AI assistant for your internal documents (powered by Ollama).</p>
+      </div>
+      <div class="hidden md:flex gap-3 text-sm text-slate-400">
+        <span>Demo</span>
+        <span>Docs (coming soon)</span>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="mb-10">
+      <h2 class="text-3xl md:text-4xl font-semibold tracking-tight mb-3">
+        Turn your documents into a <span class="text-sky-400">24/7 AI expert</span>.
+      </h2>
+      <p class="text-slate-300 max-w-2xl">
+        Upload policies, procedures, playbooks, and training docs. Ask natural language questions.
+        Get grounded, source-backed answers in seconds. Runs locally using Ollama – no API keys required.
+      </p>
+    </section>
+
+    <div class="grid md:grid-cols-2 gap-6">
+      <!-- Upload card -->
+      <section class="bg-slate-900/60 border border-slate-800 rounded-xl p-5 shadow-lg shadow-slate-950/40">
+        <h3 class="text-lg font-semibold mb-2">1. Upload &amp; index documents</h3>
+        <p class="text-xs text-slate-400 mb-3">
+          Supported in this demo: PDF, DOCX, TXT. Files are stored locally on this machine only.
+        </p>
+        <input id="file-input" type="file" multiple
+               class="block w-full text-sm text-slate-300 mb-3
+                      file:mr-4 file:py-2 file:px-4
+                      file:rounded-lg file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-sky-500 file:text-white
+                      hover:file:bg-sky-400">
+        <button id="upload-btn"
+                class="inline-flex items-center justify-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white hover:bg-sky-400 disabled:opacity-60">
+          Upload &amp; Index
+        </button>
+        <p id="upload-status" class="mt-2 text-xs text-slate-400"></p>
+      </section>
+
+      <!-- QA card -->
+      <section class="bg-slate-900/60 border border-slate-800 rounded-xl p-5 shadow-lg shadow-slate-950/40">
+        <h3 class="text-lg font-semibold mb-2">2. Ask a question</h3>
+        <p class="text-xs text-slate-400 mb-3">
+          Example: <span class="italic">'What is our late fee policy?'</span>
+        </p>
+        <input id="question-input" type="text"
+               placeholder="Type your question here..."
+               class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-sky-500" />
+        <button id="ask-btn"
+                class="inline-flex items-center justify-center rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-400 disabled:opacity-60">
+          Ask
+        </button>
+        <p id="answer-status" class="mt-2 text-xs text-slate-400"></p>
+
+        <div class="mt-4">
+          <h4 class="text-sm font-semibold text-slate-200 mb-1">Answer</h4>
+          <div id="answer-box" class="text-sm text-slate-100 bg-slate-950/60 border border-slate-800 rounded-lg p-3 min-h-[80px]"></div>
+          <div id="sources-box" class="mt-3 text-xs text-slate-400"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Footer -->
+    <footer class="mt-10 border-t border-slate-800 pt-4 text-xs text-slate-500 flex justify-between">
+      <span>&copy; <span id="year"></span> RAGifyAI – Ollama MVP demo. Not for production use.</span>
+      <span class="hidden md:inline">Built for internal knowledge, operations, and loan servicing teams.</span>
+    </footer>
+  </div>
+
+  <script>
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    const uploadBtn = document.getElementById("upload-btn");
+    const fileInput = document.getElementById("file-input");
+    const uploadStatus = document.getElementById("upload-status");
+
+    const askBtn = document.getElementById("ask-btn");
+    const questionInput = document.getElementById("question-input");
+    const answerBox = document.getElementById("answer-box");
+    const answerStatus = document.getElementById("answer-status");
+    const sourcesBox = document.getElementById("sources-box");
+
+    uploadBtn.onclick = async () => {
+      const files = fileInput.files;
+      if (!files.length) {
+        alert("Select at least one file.");
+        return;
+      }
+
+      const formData = new FormData();
+      for (const f of files) {
+        formData.append("files", f);
+      }
+
+      uploadBtn.disabled = true;
+      uploadStatus.textContent = "Uploading and indexing…";
+
+      try {
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData
+        });
+        const data = await res.json();
+        if (res.ok) {
+          uploadStatus.textContent = `Indexed ${data.indexed_chunks} chunks from your documents.`;
+        } else {
+          uploadStatus.textContent = data.detail || "Upload failed.";
+        }
+      } catch (err) {
+        console.error(err);
+        uploadStatus.textContent = "Error during upload.";
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    };
+
+    askBtn.onclick = async () => {
+      const question = questionInput.value.trim();
+      if (!question) {
+        alert("Type a question.");
+        return;
+      }
+
+      askBtn.disabled = true;
+      answerStatus.textContent = "Thinking…";
+      answerBox.textContent = "";
+      sourcesBox.textContent = "";
+
+      try {
+        const res = await fetch("/api/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: question, top_k: 4 })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          answerBox.textContent = data.answer || "(No answer)";
+          if (data.sources && data.sources.length) {
+            sourcesBox.textContent = "Sources: " + data.sources.join(", ");
+          }
+        } else {
+          answerBox.textContent = data.detail || "Query failed.";
+        }
+      } catch (err) {
+        console.error(err);
+        answerBox.textContent = "Error while querying.";
+      } finally {
+        answerStatus.textContent = "";
+        askBtn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

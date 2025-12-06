@@ -1,0 +1,193 @@
+from typing import List, Tuple
+import json
+import requests
+import chromadb
+from chromadb.config import Settings
+
+from ..config import VECTOR_DIR
+import os
+
+OLLAMA_BASE_URL = "http://localhost:11434"
+# timeout (seconds) for requests to Ollama to avoid hanging the app
+# increased for local model cold-starts / debugging
+REQUEST_TIMEOUT = 60
+
+import logging
+logger = logging.getLogger(__name__)
+
+# Initialise Chroma client and collection
+# Lazy-initialized Chroma client/collection to avoid blocking imports or
+# initialization when running in mock mode or when Chroma isn't available.
+chroma_client = None
+collection = None
+
+
+def is_mock_mode() -> bool:
+    return os.getenv("RAGIFY_MOCK", "0") == "1"
+
+
+def embed_texts(texts: List[str]) -> List[List[float]]:
+    """
+    Get embeddings for a list of texts using a local Ollama embedding model.
+    Model: nomic-embed-text (run `ollama pull nomic-embed-text` first).
+    """
+    logger.info("Embedding %d texts via Ollama (timeout=%ds) mock=%s", len(texts), REQUEST_TIMEOUT, is_mock_mode())
+    # If mock mode is enabled, return deterministic small vectors to avoid Ollama.
+    if is_mock_mode():
+        emb = [0.0] * 8
+        return [list(emb) for _ in texts]
+
+    embeddings: List[List[float]] = []
+    for idx, t in enumerate(texts):
+        payload = {"model": "nomic-embed-text", "input": t}
+        logger.debug("Requesting embedding for text %d (len=%d)", idx, len(t))
+        try:
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/embeddings",
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            logger.exception("Embedding request failed for text %d: %s", idx, e)
+            raise RuntimeError(
+                f"Failed to get embeddings from Ollama at {OLLAMA_BASE_URL}. "
+                f"Check that Ollama is running and the model 'nomic-embed-text' is pulled. Original error: {e}"
+            )
+        data = resp.json()
+        emb = data.get("embedding")
+        if emb is None:
+            raise RuntimeError("No embedding returned from Ollama.")
+        logger.debug("Received embedding for text %d (len=%d)", idx, len(emb))
+        embeddings.append(emb)
+    return embeddings
+
+
+def add_documents(chunks: List[str], source_filename: str) -> int:
+    """
+    Add chunks for a given source file into the Chroma collection.
+    Returns number of chunks indexed.
+    """
+    if not chunks:
+        return 0
+
+    # If mock mode is enabled, skip actual Chroma operations to avoid external dependencies
+    if is_mock_mode():
+        logger.info("MOCK_MODE: skipping Chroma indexing for %s — returning %d chunks", source_filename, len(chunks))
+        return len(chunks)
+
+    # Lazy init Chroma client/collection here so the module import doesn't
+    # attempt to open DB files when not needed.
+    global chroma_client, collection
+    if chroma_client is None or collection is None:
+        chroma_client = chromadb.Client(
+            Settings(chroma_db_impl="duckdb+parquet", persist_directory=VECTOR_DIR)
+        )
+        collection = chroma_client.get_or_create_collection("documents")
+
+    logger.info("Indexing %d chunks from %s", len(chunks), source_filename)
+    embeddings = embed_texts(chunks)
+    base_id = source_filename.replace(" ", "_")
+    ids = [f"{base_id}_{i}" for i in range(len(chunks))]
+    metadatas = [{"source_file": source_filename, "chunk": i} for i in range(len(chunks))]
+    collection.add(
+        ids=ids,
+        embeddings=embeddings,
+        documents=chunks,
+        metadatas=metadatas,
+    )
+    chroma_client.persist()
+    return len(chunks)
+
+
+def query_collection(question: str, top_k: int = 4) -> Tuple[str, List[str]]:
+    """
+    Perform a similarity search and answer the question using retrieved context.
+    Returns (answer, list_of_source_files).
+    """
+    logger.info("Query received: %s", question)
+    # embed question
+    q_embedding = embed_texts([question])[0]
+
+    results = collection.query(
+        query_embeddings=[q_embedding],
+        n_results=top_k,
+    )
+
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+
+    if not docs:
+        return (
+            "I could not find anything relevant in the indexed documents.",
+            [],
+        )
+
+    context_pieces: List[str] = []
+    sources: List[str] = []
+    for doc, meta in zip(docs, metas):
+        src = meta.get("source_file", "unknown")
+        context_pieces.append(f"[{src}] {doc}")
+        sources.append(src)
+
+    # dedupe sources while preserving order
+    seen = set()
+    dedup_sources: List[str] = []
+    for s in sources:
+        if s not in seen:
+            seen.add(s)
+            dedup_sources.append(s)
+
+    context = "\n\n".join(context_pieces)
+    answer = _call_chat_model(question, context)
+    return answer, dedup_sources
+
+
+def _call_chat_model(question: str, context: str) -> str:
+    """
+    Call a local Ollama chat model (llama3) with the retrieved context.
+    Run `ollama pull llama3` first.
+    """
+    prompt = f"""
+You are a business assistant that answers questions STRICTLY using the provided context.
+If the answer is not in the context, say you don't know.
+
+Context:
+{context}
+
+Question: {question}
+"""
+
+    # Streamed response from Ollama
+    logger.info("Calling chat model (llama3) for question (len=%d) with context length %d mock=%s", len(question), len(context), is_mock_mode())
+    try:
+        # If mock mode, return a canned response immediately
+        if is_mock_mode():
+            return "(mocked) This is a canned answer used for local UI testing."
+
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={"model": "llama3", "prompt": prompt, "stream": True},
+            stream=True,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+
+    except requests.RequestException as e:
+        logger.exception("Chat generation request failed: %s", e)
+        raise RuntimeError(
+            f"Failed to call Ollama chat API at {OLLAMA_BASE_URL}. "
+            f"Ensure Ollama is running and the 'llama3' model is available. Original error: {e}"
+        )
+
+    answer_chunks: List[str] = []
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        data = json.loads(line.decode("utf-8"))
+        token = data.get("response", "")
+        answer_chunks.append(token)
+        if data.get("done"):
+            break
+
+    return "".join(answer_chunks).strip()

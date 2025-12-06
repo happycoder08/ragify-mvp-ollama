@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+chromadb<0.4.0
+pypdf
+python-docx
+requests
