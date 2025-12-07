@@ -37,17 +37,29 @@ def get_db() -> Generator[Session, None, None]:
     """
     Dependency that provides a database session.
     Yields a session and ensures it's closed after use.
+    Returns None if database is not available.
     
     Usage in FastAPI:
         @app.get("/endpoint")
         def endpoint(db: Session = Depends(get_db)):
-            # use db here
+            # use db here - check if db is None first!
     """
-    db = SessionLocal()
+    db = None
+    try:
+        db = SessionLocal()
+    except Exception as e:
+        logger.warning("Database session creation failed: %s", e)
+        yield None
+        return
+    
     try:
         yield db
     finally:
-        db.close()
+        if db is not None:
+            try:
+                db.close()
+            except Exception as e:
+                logger.warning("Database session close failed: %s", e)
 
 
 def init_db() -> None:
@@ -74,8 +86,9 @@ def test_connection() -> bool:
     Returns True if connection is successful, False otherwise.
     """
     try:
+        from sqlalchemy import text
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))
         logger.info("Database connection test successful")
         return True
     except Exception as e:

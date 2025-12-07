@@ -71,7 +71,7 @@ async def health():
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return FileResponse("static/login.html")
+    return FileResponse("static/index.html")
 
 
 class LoginRequest(BaseModel):
@@ -92,7 +92,7 @@ async def login(req: LoginRequest):
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    token = create_access_token({"sub": user["username"], "tenant_id": user["tenant_id"]})
+    token = create_access_token(user["username"], user["tenant_id"])
     return LoginResponse(
         access_token=token,
         token_type="bearer",
@@ -243,7 +243,8 @@ async def list_documents(
     db: Session = Depends(get_db)
 ):
     """Protected endpoint: list all documents for the authenticated user's tenant."""
-    if not db:
+    # Check if database is available
+    if db is None:
         return {"documents": [], "message": "Database not available"}
     
     tenant_id = current_user["tenant_id"]
@@ -262,5 +263,5 @@ async def list_documents(
             ]
         }
     except Exception as e:
-        logger.exception("Failed to list documents: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to list documents: {str(e)}")
+        logger.warning("Failed to list documents: %s", e)
+        return {"documents": [], "message": "Database error"}

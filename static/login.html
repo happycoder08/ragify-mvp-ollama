@@ -103,13 +103,9 @@
 
   <script>
     // Check if already logged in
-    const token = localStorage.getItem('ragify_token');
+    const token = localStorage.getItem('token');
     if (token) {
-      // Verify token is still valid by checking user data
-      const userData = localStorage.getItem('ragify_user');
-      if (userData) {
-        window.location.href = '/';
-      }
+      window.location.href = '/static/index.html';
     }
 
     // Handle form submission
@@ -144,15 +140,12 @@
         const data = await response.json();
         
         // Store token and user data
-        localStorage.setItem('ragify_token', data.access_token);
-        localStorage.setItem('ragify_user', JSON.stringify({
-          username: data.username,
-          tenant_id: data.tenant_id,
-          name: data.name,
-        }));
+        localStorage.setItem('token', data.access_token);
+        localStorage.setItem('tenant_id', data.tenant_id);
+        localStorage.setItem('username', username);
         
         // Redirect to main app
-        window.location.href = '/';
+        window.location.href = '/static/index.html';
         
       } catch (error) {
         console.error('Login error:', error);
