@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login – RAGify AI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-md px-4">
+    <!-- Login Card -->
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-8 shadow-2xl shadow-slate-950/40">
+      <!-- Logo -->
+      <div class="text-center mb-8">
+        <h1 class="text-3xl font-semibold tracking-tight mb-2">
+          RAGify<span class="text-sky-400">AI</span>
+        </h1>
+        <p class="text-sm text-slate-400">Sign in to your knowledge base</p>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" class="space-y-5">
+        <!-- Username -->
+        <div>
+          <label for="username" class="block text-sm font-medium text-slate-300 mb-1">
+            Username
+          </label>
+          <input 
+            type="text" 
+            id="username" 
+            name="username" 
+            required
+            class="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg 
+                   text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 
+                   focus:ring-sky-500 focus:border-transparent"
+            placeholder="Enter your username"
+            autocomplete="username"
+          />
+        </div>
+
+        <!-- Password -->
+        <div>
+          <label for="password" class="block text-sm font-medium text-slate-300 mb-1">
+            Password
+          </label>
+          <input 
+            type="password" 
+            id="password" 
+            name="password" 
+            required
+            class="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-700 rounded-lg 
+                   text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 
+                   focus:ring-sky-500 focus:border-transparent"
+            placeholder="Enter your password"
+            autocomplete="current-password"
+          />
+        </div>
+
+        <!-- Error Message -->
+        <div id="error-msg" class="hidden bg-red-900/20 border border-red-800 text-red-300 px-4 py-3 rounded-lg text-sm">
+          Invalid username or password
+        </div>
+
+        <!-- Submit Button -->
+        <button 
+          type="submit" 
+          id="login-btn"
+          class="w-full bg-sky-500 hover:bg-sky-400 text-white font-medium py-2.5 px-4 
+                 rounded-lg transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          Sign In
+        </button>
+      </form>
+
+      <!-- Demo Credentials -->
+      <div class="mt-8 pt-6 border-t border-slate-800">
+        <p class="text-xs text-slate-500 mb-3 text-center">Demo credentials:</p>
+        <div class="space-y-2 text-xs text-slate-400">
+          <div class="bg-slate-800/30 px-3 py-2 rounded">
+            <span class="font-mono text-sky-400">demo</span> / 
+            <span class="font-mono text-sky-400">demo123</span>
+            <span class="text-slate-500 ml-2">(Default tenant)</span>
+          </div>
+          <div class="bg-slate-800/30 px-3 py-2 rounded">
+            <span class="font-mono text-sky-400">acme_admin</span> / 
+            <span class="font-mono text-sky-400">acme123</span>
+            <span class="text-slate-500 ml-2">(ACME Corp)</span>
+          </div>
+          <div class="bg-slate-800/30 px-3 py-2 rounded">
+            <span class="font-mono text-sky-400">finance_user</span> / 
+            <span class="font-mono text-sky-400">finance123</span>
+            <span class="text-slate-500 ml-2">(Finance tenant)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <p class="text-center text-xs text-slate-500 mt-6">
+      RAGify AI MVP – Secure, Multi-Tenant Knowledge Base
+    </p>
+  </div>
+
+  <script>
+    // Check if already logged in
+    const token = localStorage.getItem('ragify_token');
+    if (token) {
+      // Verify token is still valid by checking user data
+      const userData = localStorage.getItem('ragify_user');
+      if (userData) {
+        window.location.href = '/';
+      }
+    }
+
+    // Handle form submission
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const errorMsg = document.getElementById('error-msg');
+      const loginBtn = document.getElementById('login-btn');
+      
+      // Hide error
+      errorMsg.classList.add('hidden');
+      
+      // Disable button
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Signing in...';
+      
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ username, password }),
+        });
+        
+        if (!response.ok) {
+          throw new Error('Login failed');
+        }
+        
+        const data = await response.json();
+        
+        // Store token and user data
+        localStorage.setItem('ragify_token', data.access_token);
+        localStorage.setItem('ragify_user', JSON.stringify({
+          username: data.username,
+          tenant_id: data.tenant_id,
+          name: data.name,
+        }));
+        
+        // Redirect to main app
+        window.location.href = '/';
+        
+      } catch (error) {
+        console.error('Login error:', error);
+        errorMsg.classList.remove('hidden');
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Sign In';
+      }
+    });
+  </script>
+</body>
+</html>
