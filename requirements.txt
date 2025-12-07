@@ -7,3 +7,7 @@ pypdf
 python-docx
 requests
 httpx
+sqlalchemy
+psycopg2-binary
+PyJWT
+bcrypt

@@ -1,200 +1,560 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>RAGify AI – Business Assistant Demo (Ollama)</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="pageTitle">RAGify AI - Document Intelligence</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            padding: 30px;
+            background: var(--primary-color, #3b82f6);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .logo {
+            width: 50px;
+            height: 50px;
+            border-radius: 10px;
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .logout-btn {
+            padding: 8px 20px;
+            background: rgba(255,255,255,0.2);
+            border: 1px solid white;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .logout-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .disclaimer {
+            background: #fff3cd;
+            padding: 15px;
+            margin: 20px 30px;
+            border-left: 4px solid #ffc107;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #856404;
+        }
+        .content {
+            padding: 30px;
+        }
+        .section {
+            margin-bottom: 40px;
+        }
+        .section h2 {
+            color: #1f2937;
+            margin-bottom: 20px;
+            font-size: 22px;
+        }
+        .documents-list {
+            background: #f9fafb;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .document-item {
+            background: white;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .doc-info {
+            flex: 1;
+        }
+        .doc-name {
+            font-weight: 600;
+            color: #1f2937;
+        }
+        .doc-meta {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-indexed {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        .status-indexing {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        .status-failed {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .upload-area {
+            border: 2px dashed #cbd5e1;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            background: #f9fafb;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .upload-area:hover {
+            border-color: var(--primary-color, #3b82f6);
+            background: #f1f5f9;
+        }
+        .upload-area.dragover {
+            border-color: var(--primary-color, #3b82f6);
+            background: #e0f2fe;
+        }
+        .file-input {
+            display: none;
+        }
+        .upload-btn {
+            padding: 12px 30px;
+            background: var(--primary-color, #3b82f6);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .upload-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .query-section {
+            background: #f9fafb;
+            padding: 30px;
+            border-radius: 12px;
+        }
+        .query-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 16px;
+            margin-bottom: 15px;
+            transition: border-color 0.3s;
+        }
+        .query-input:focus {
+            outline: none;
+            border-color: var(--primary-color, #3b82f6);
+        }
+        .ask-btn {
+            padding: 12px 30px;
+            background: var(--primary-color, #3b82f6);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        .ask-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+        .ask-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .answer-box {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            min-height: 100px;
+            border: 2px solid #e5e7eb;
+        }
+        .sources {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e5e7eb;
+        }
+        .sources h4 {
+            color: #6b7280;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .source-tag {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #e0f2fe;
+            color: #0369a1;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-right: 8px;
+            margin-bottom: 8px;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid var(--primary-color, #3b82f6);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .empty-state {
+            text-align: center;
+            color: #9ca3af;
+            padding: 30px;
+        }
+    </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen">
-  <div class="max-w-5xl mx-auto px-4 py-8">
-    <!-- Header -->
-    <header class="flex items-center justify-between mb-10">
-      <div>
-        <h1 class="text-2xl font-semibold tracking-tight">RAGify<span class="text-sky-400">AI</span></h1>
-        <p class="text-sm text-slate-400">Private AI assistant for your internal documents (powered by Ollama).</p>
-      </div>
-      <div class="hidden md:flex gap-3 text-sm text-slate-400">
-        <span>Demo</span>
-        <span>Docs (coming soon)</span>
-      </div>
-    </header>
-
-    <!-- Hero -->
-    <section class="mb-10">
-      <h2 class="text-3xl md:text-4xl font-semibold tracking-tight mb-3">
-        Turn your documents into a <span class="text-sky-400">24/7 AI expert</span>.
-      </h2>
-      <p class="text-slate-300 max-w-2xl">
-        Upload policies, procedures, playbooks, and training docs. Ask natural language questions.
-        Get grounded, source-backed answers in seconds. Runs locally using Ollama – no API keys required.
-      </p>
-    </section>
-
-    <div class="grid md:grid-cols-2 gap-6">
-      <!-- Upload card -->
-      <section class="bg-slate-900/60 border border-slate-800 rounded-xl p-5 shadow-lg shadow-slate-950/40">
-        <h3 class="text-lg font-semibold mb-2">1. Upload &amp; index documents</h3>
-        <p class="text-xs text-slate-400 mb-3">
-          Supported in this demo: PDF, DOCX, TXT. Files are stored locally on this machine only.
-        </p>
-        <input id="file-input" type="file" multiple
-               class="block w-full text-sm text-slate-300 mb-3
-                      file:mr-4 file:py-2 file:px-4
-                      file:rounded-lg file:border-0
-                      file:text-sm file:font-semibold
-                      file:bg-sky-500 file:text-white
-                      hover:file:bg-sky-400">
-        <button id="upload-btn"
-                class="inline-flex items-center justify-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white hover:bg-sky-400 disabled:opacity-60">
-          Upload &amp; Index
-        </button>
-        <p id="upload-status" class="mt-2 text-xs text-slate-400"></p>
-      </section>
-
-      <!-- QA card -->
-      <section class="bg-slate-900/60 border border-slate-800 rounded-xl p-5 shadow-lg shadow-slate-950/40">
-        <h3 class="text-lg font-semibold mb-2">2. Ask a question</h3>
-        <p class="text-xs text-slate-400 mb-3">
-          Example: <span class="italic">'What is our late fee policy?'</span>
-        </p>
-        <input id="question-input" type="text"
-               placeholder="Type your question here..."
-               class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-sky-500" />
-        <button id="ask-btn"
-                class="inline-flex items-center justify-center rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-400 disabled:opacity-60">
-          Ask
-        </button>
-        <p id="answer-status" class="mt-2 text-xs text-slate-400"></p>
-
-        <div class="mt-4">
-          <h4 class="text-sm font-semibold text-slate-200 mb-1">Answer</h4>
-          <div id="answer-box" class="text-sm text-slate-100 bg-slate-950/60 border border-slate-800 rounded-lg p-3 min-h-[80px]"></div>
-          <div id="sources-box" class="mt-3 text-xs text-slate-400"></div>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo-section">
+                <img id="tenantLogo" src="" alt="Logo" class="logo" style="display:none;">
+                <h1 id="tenantTitle">RAGify AI</h1>
+            </div>
+            <div class="user-info">
+                <span id="username"></span>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
         </div>
-      </section>
+
+        <div id="disclaimer" class="disclaimer" style="display:none;"></div>
+
+        <div class="content">
+            <!-- Documents Section -->
+            <div class="section">
+                <h2>📄 Your Documents</h2>
+                <div class="documents-list" id="documentsList">
+                    <div class="empty-state">No documents yet. Upload your first document below!</div>
+                </div>
+            </div>
+
+            <!-- Upload Section -->
+            <div class="section">
+                <h2>📤 Upload Documents</h2>
+                <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+                    <p style="font-size: 18px; color: #6b7280; margin-bottom: 10px;">
+                        📁 Drop files here or click to browse
+                    </p>
+                    <p style="font-size: 14px; color: #9ca3af;">
+                        Supported: PDF, DOCX, TXT
+                    </p>
+                    <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.docx,.txt">
+                    <button class="upload-btn" id="uploadBtn" onclick="event.stopPropagation(); uploadFiles()">
+                        Upload Selected Files
+                    </button>
+                </div>
+            </div>
+
+            <!-- Query Section -->
+            <div class="section">
+                <h2>💬 Ask Questions</h2>
+                <div class="query-section">
+                    <input 
+                        type="text" 
+                        id="queryInput" 
+                        class="query-input" 
+                        placeholder="Ask a question about your documents..."
+                        onkeypress="if(event.key==='Enter') askQuestion()"
+                    >
+                    <button class="ask-btn" id="askBtn" onclick="askQuestion()">Ask Question</button>
+                    <div class="answer-box" id="answerBox" style="display:none;">
+                        <div id="answer"></div>
+                        <div class="sources" id="sources" style="display:none;">
+                            <h4>📚 Sources:</h4>
+                            <div id="sourceTags"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="mt-10 border-t border-slate-800 pt-4 text-xs text-slate-500 flex justify-between">
-      <span>&copy; <span id="year"></span> RAGifyAI – Ollama MVP demo. Not for production use.</span>
-      <span class="hidden md:inline">Built for internal knowledge, operations, and loan servicing teams.</span>
-    </footer>
-  </div>
+    <script>
+        // Check authentication
+        const token = localStorage.getItem('token');
+        const tenantId = localStorage.getItem('tenant_id');
+        const username = localStorage.getItem('username');
 
-  <script>
-    document.getElementById("year").textContent = new Date().getFullYear();
-
-    const uploadBtn = document.getElementById("upload-btn");
-    const fileInput = document.getElementById("file-input");
-    const uploadStatus = document.getElementById("upload-status");
-
-    const askBtn = document.getElementById("ask-btn");
-    const questionInput = document.getElementById("question-input");
-    const answerBox = document.getElementById("answer-box");
-    const answerStatus = document.getElementById("answer-status");
-    const sourcesBox = document.getElementById("sources-box");
-
-    uploadBtn.onclick = async () => {
-      const files = fileInput.files;
-      if (!files.length) {
-        alert("Select at least one file.");
-        return;
-      }
-
-      const formData = new FormData();
-      for (const f of files) {
-        formData.append("files", f);
-      }
-
-      uploadBtn.disabled = true;
-      uploadStatus.textContent = "Uploading and indexing…";
-
-      try {
-        const res = await fetch("/api/upload", {
-          method: "POST",
-          body: formData
-        });
-        const data = await res.json();
-        if (res.ok) {
-          uploadStatus.textContent = `Indexed ${data.indexed_chunks} chunks from your documents.`;
-        } else {
-          uploadStatus.textContent = data.detail || "Upload failed.";
-        }
-      } catch (err) {
-        console.error(err);
-        uploadStatus.textContent = "Error during upload.";
-      } finally {
-        uploadBtn.disabled = false;
-      }
-    };
-
-    askBtn.onclick = async () => {
-      const question = questionInput.value.trim();
-      if (!question) {
-        alert("Type a question.");
-        return;
-      }
-
-      askBtn.disabled = true;
-      answerStatus.textContent = "Thinking…";
-      answerBox.textContent = "";
-      sourcesBox.textContent = "";
-
-      try {
-        const res = await fetch("/api/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: question, top_k: 4 })
-        });
-        
-        if (!res.ok) {
-          const data = await res.json();
-          answerBox.textContent = data.detail || "Query failed.";
-          return;
+        if (!token || !tenantId) {
+            window.location.href = '/static/login.html';
         }
 
-        // Handle streaming NDJSON response
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let sources = [];
+        document.getElementById('username').textContent = username || 'User';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop(); // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            
-            try {
-              const data = JSON.parse(line);
-              if (data.sources) {
-                sources = data.sources;
-                if (sources.length) {
-                  sourcesBox.textContent = "Sources: " + sources.join(", ");
-                }
-              } else if (data.token) {
-                answerBox.textContent += data.token;
-              }
-            } catch (e) {
-              console.error("Failed to parse line:", line, e);
+        // Fetch with authentication
+        async function fetchWithAuth(url, options = {}) {
+            const headers = {
+                ...options.headers,
+                'Authorization': `Bearer ${token}`
+            };
+            const response = await fetch(url, { ...options, headers });
+            if (response.status === 401) {
+                localStorage.clear();
+                window.location.href = '/static/login.html';
             }
-          }
+            return response;
         }
 
-      } catch (err) {
-        console.error(err);
-        answerBox.textContent = "Error while querying.";
-      } finally {
-        answerStatus.textContent = "";
-        askBtn.disabled = false;
-      }
-    };
-  </script>
+        // Load tenant configuration
+        async function loadTenantConfig() {
+            try {
+                const response = await fetchWithAuth('/api/config');
+                if (response.ok) {
+                    const config = await response.json();
+                    document.documentElement.style.setProperty('--primary-color', config.primary_color);
+                    document.getElementById('tenantTitle').textContent = config.title;
+                    document.getElementById('pageTitle').textContent = config.title;
+                    
+                    if (config.logo_url) {
+                        const logo = document.getElementById('tenantLogo');
+                        logo.src = config.logo_url;
+                        logo.style.display = 'block';
+                    }
+                    
+                    if (config.disclaimer) {
+                        const disclaimer = document.getElementById('disclaimer');
+                        disclaimer.textContent = config.disclaimer;
+                        disclaimer.style.display = 'block';
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load tenant config:', error);
+            }
+        }
+
+        // Load documents
+        async function loadDocuments() {
+            try {
+                const response = await fetchWithAuth('/api/documents');
+                if (response.ok) {
+                    const data = await response.json();
+                    const list = document.getElementById('documentsList');
+                    
+                    if (data.documents.length === 0) {
+                        list.innerHTML = '<div class="empty-state">No documents yet. Upload your first document below!</div>';
+                    } else {
+                        list.innerHTML = data.documents.map(doc => `
+                            <div class="document-item">
+                                <div class="doc-info">
+                                    <div class="doc-name">${doc.filename}</div>
+                                    <div class="doc-meta">Uploaded: ${new Date(doc.created_at).toLocaleString()}</div>
+                                    ${doc.error_message ? `<div class="doc-meta" style="color: #dc2626;">${doc.error_message}</div>` : ''}
+                                </div>
+                                <span class="status-badge status-${doc.status}">${doc.status}</span>
+                            </div>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load documents:', error);
+            }
+        }
+
+        // File upload
+        const fileInput = document.getElementById('fileInput');
+        const uploadArea = document.getElementById('uploadArea');
+
+        fileInput.addEventListener('change', () => {
+            const files = fileInput.files;
+            if (files.length > 0) {
+                document.getElementById('uploadBtn').textContent = `Upload ${files.length} File(s)`;
+            }
+        });
+
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            fileInput.files = e.dataTransfer.files;
+            if (fileInput.files.length > 0) {
+                document.getElementById('uploadBtn').textContent = `Upload ${fileInput.files.length} File(s)`;
+            }
+        });
+
+        async function uploadFiles() {
+            const files = fileInput.files;
+            if (files.length === 0) {
+                alert('Please select files to upload');
+                return;
+            }
+
+            const formData = new FormData();
+            for (let file of files) {
+                formData.append('files', file);
+            }
+
+            const uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+
+            try {
+                const response = await fetchWithAuth('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    alert('Files uploaded successfully!');
+                    fileInput.value = '';
+                    uploadBtn.textContent = 'Upload Selected Files';
+                    loadDocuments();
+                } else {
+                    const error = await response.json();
+                    alert('Upload failed: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Upload failed: ' + error.message);
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        }
+
+        // Query
+        async function askQuestion() {
+            const question = document.getElementById('queryInput').value.trim();
+            if (!question) {
+                alert('Please enter a question');
+                return;
+            }
+
+            const askBtn = document.getElementById('askBtn');
+            const answerBox = document.getElementById('answerBox');
+            const answerDiv = document.getElementById('answer');
+            const sourcesDiv = document.getElementById('sources');
+            const sourceTagsDiv = document.getElementById('sourceTags');
+
+            askBtn.disabled = true;
+            askBtn.textContent = 'Thinking...';
+            answerBox.style.display = 'block';
+            answerDiv.innerHTML = '<div class="loading"></div>';
+            sourcesDiv.style.display = 'none';
+
+            try {
+                const response = await fetchWithAuth('/api/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, top_k: 4 })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Query failed');
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let answer = '';
+                let sources = [];
+
+                answerDiv.innerHTML = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n').filter(line => line.trim());
+
+                    for (const line of lines) {
+                        try {
+                            const data = JSON.parse(line);
+                            if (data.sources) {
+                                sources = data.sources;
+                            } else if (data.token) {
+                                answer += data.token;
+                                answerDiv.textContent = answer;
+                            }
+                        } catch (e) {
+                            console.error('Parse error:', e);
+                        }
+                    }
+                }
+
+                if (sources.length > 0) {
+                    sourcesDiv.style.display = 'block';
+                    sourceTagsDiv.innerHTML = sources.map(src => 
+                        `<span class="source-tag">${src}</span>`
+                    ).join('');
+                }
+
+            } catch (error) {
+                answerDiv.textContent = 'Error: ' + error.message;
+            } finally {
+                askBtn.disabled = false;
+                askBtn.textContent = 'Ask Question';
+            }
+        }
+
+        function logout() {
+            localStorage.clear();
+            window.location.href = '/static/login.html';
+        }
+
+        // Initialize
+        loadTenantConfig();
+        loadDocuments();
+        setInterval(loadDocuments, 5000); // Refresh every 5 seconds
+    </script>
 </body>
 </html>

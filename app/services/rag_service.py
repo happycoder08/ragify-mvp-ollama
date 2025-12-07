@@ -1,4 +1,4 @@
-from typing import List, Tuple, AsyncGenerator, Dict
+from typing import List, Tuple, AsyncGenerator, Dict, Any
 import json
 import httpx
 import chromadb
@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 chroma_client = None
 collection = None
 
+# Multi-tenant support: maintain separate collections per tenant
+_tenant_collections: Dict[str, Any] = {}
+
 # Persistent async HTTP client for connection pooling
 _http_client: httpx.AsyncClient = None
 
@@ -41,15 +44,22 @@ async def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
-def _get_collection():
-    """Ensure Chroma client/collection are initialized and return collection."""
-    global chroma_client, collection
-    if chroma_client is None or collection is None:
+def _get_collection(tenant_id: str = "default"):
+    """Ensure Chroma client/collection are initialized and return tenant-specific collection."""
+    global chroma_client, _tenant_collections
+    
+    if chroma_client is None:
         chroma_client = chromadb.Client(
             Settings(chroma_db_impl="duckdb+parquet", persist_directory=VECTOR_DIR)
         )
-        collection = chroma_client.get_or_create_collection("documents")
-    return collection
+    
+    # Get or create tenant-specific collection
+    if tenant_id not in _tenant_collections:
+        collection_name = f"documents_{tenant_id}"
+        _tenant_collections[tenant_id] = chroma_client.get_or_create_collection(collection_name)
+        logger.info(f"Initialized collection for tenant: {tenant_id}")
+    
+    return _tenant_collections[tenant_id]
 
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -111,9 +121,9 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     return embeddings
 
 
-async def add_documents(chunks: List[str], source_filename: str) -> int:
+async def add_documents(tenant_id: str, chunks: List[str], source_filename: str) -> int:
     """
-    Add chunks for a given source file into the Chroma collection.
+    Add chunks for a given source file into the tenant-specific Chroma collection.
     Returns number of chunks indexed.
     """
     if not chunks:
@@ -121,20 +131,13 @@ async def add_documents(chunks: List[str], source_filename: str) -> int:
 
     # If mock mode is enabled, skip actual Chroma operations to avoid external dependencies
     if is_mock_mode():
-        logger.info("MOCK_MODE: skipping Chroma indexing for %s — returning %d chunks", source_filename, len(chunks))
+        logger.info("MOCK_MODE: skipping Chroma indexing for %s (tenant=%s) — returning %d chunks", source_filename, tenant_id, len(chunks))
         return len(chunks)
 
-    # Lazy init Chroma client/collection here so the module import doesn't
-    # attempt to open DB files when not needed.
-    global chroma_client, collection
-    if chroma_client is None or collection is None:
-        chroma_client = chromadb.Client(
-            Settings(chroma_db_impl="duckdb+parquet", persist_directory=VECTOR_DIR)
-        )
-        collection = chroma_client.get_or_create_collection("documents")
-
-    logger.info("Indexing %d chunks from %s", len(chunks), source_filename)
+    logger.info("Indexing %d chunks from %s for tenant %s", len(chunks), source_filename, tenant_id)
     embeddings = await embed_texts(chunks)
+    collection = _get_collection(tenant_id)
+    
     base_id = source_filename.replace(" ", "_")
     ids = [f"{base_id}_{i}" for i in range(len(chunks))]
     metadatas = [{"source_file": source_filename, "chunk": i} for i in range(len(chunks))]
@@ -144,16 +147,20 @@ async def add_documents(chunks: List[str], source_filename: str) -> int:
         documents=chunks,
         metadatas=metadatas,
     )
-    chroma_client.persist()
+    
+    global chroma_client
+    if chroma_client:
+        chroma_client.persist()
+    
     return len(chunks)
 
 
-async def query_collection(question: str, top_k: int = 4) -> Tuple[AsyncGenerator[str, None], List[str]]:
+async def query_collection(tenant_id: str, question: str, top_k: int = 4) -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
-    Perform a similarity search and answer the question using retrieved context.
+    Perform a similarity search in the tenant-specific collection and answer the question using retrieved context.
     Returns (answer_generator, list_of_source_files) where answer_generator yields tokens.
     """
-    logger.info("Query received: %s", question)
+    logger.info("Query received from tenant %s: %s", tenant_id, question)
 
     # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
     if is_mock_mode():
@@ -164,7 +171,7 @@ async def query_collection(question: str, top_k: int = 4) -> Tuple[AsyncGenerato
     # embed question
     q_embedding = (await embed_texts([question]))[0]
 
-    results = _get_collection().query(
+    results = _get_collection(tenant_id).query(
         query_embeddings=[q_embedding],
         n_results=top_k,
     )
@@ -257,43 +264,46 @@ def clear_embedding_cache() -> None:
     logger.info("Embedding cache cleared")
 
 
-def reset_collection() -> None:
+def reset_collection(tenant_id: str = "default") -> None:
     """
-    Reset the vector store by clearing all documents and reinitializing.
+    Reset the vector store for a specific tenant by clearing all documents and reinitializing.
     Also clears the embedding cache.
     Useful for testing or starting fresh with new documents.
     """
-    global chroma_client, collection
+    global chroma_client, _tenant_collections
     
-    logger.info("Resetting ChromaDB collection...")
+    logger.info("Resetting ChromaDB collection for tenant: %s", tenant_id)
     
     # Clear cache first
     clear_embedding_cache()
     
-    # Close existing connections
+    # Delete tenant-specific collection
     if chroma_client is not None:
+        collection_name = f"documents_{tenant_id}"
         try:
-            chroma_client.delete_collection("documents")
-            logger.info("Deleted existing collection")
+            chroma_client.delete_collection(collection_name)
+            logger.info("Deleted collection: %s", collection_name)
         except Exception as e:
-            logger.warning("Could not delete collection: %s", e)
+            logger.warning("Could not delete collection %s: %s", collection_name, e)
         
-        try:
-            chroma_client = None
-            collection = None
-        except Exception as e:
-            logger.warning("Error closing client: %s", e)
+        # Remove from cache
+        if tenant_id in _tenant_collections:
+            del _tenant_collections[tenant_id]
     
-    # Delete persisted files
-    import shutil
-    if os.path.exists(VECTOR_DIR):
-        try:
-            shutil.rmtree(VECTOR_DIR)
-            logger.info("Removed vector store directory: %s", VECTOR_DIR)
-        except Exception as e:
-            logger.warning("Could not remove vector store directory: %s", e)
-            raise RuntimeError(f"Failed to clean vector store: {e}")
-    
-    # Reinitialize on next use via lazy loading
-    logger.info("Collection reset complete. Will reinitialize on next index operation.")
+    logger.info("Collection reset complete for tenant: %s", tenant_id)
+
+
+# Wrapper functions for backward compatibility and convenience
+async def index_files(tenant_id: str, chunks: List[str], source_filename: str) -> int:
+    """
+    Convenience wrapper for add_documents with tenant support.
+    """
+    return await add_documents(tenant_id, chunks, source_filename)
+
+
+async def answer_question(tenant_id: str, question: str, top_k: int = 4) -> Tuple[AsyncGenerator[str, None], List[str]]:
+    """
+    Convenience wrapper for query_collection with tenant support.
+    """
+    return await query_collection(tenant_id, question, top_k)
 
