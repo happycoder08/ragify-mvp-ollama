@@ -5,15 +5,9 @@ import logging
 from pypdf import PdfReader
 import docx  # python-docx
 
-from ..config import UPLOAD_DIR
+from ..config import UPLOAD_DIR, CHUNK_SIZE, CHUNK_OVERLAP
 
 logger = logging.getLogger(__name__)
-
-# Configurable chunk parameters for performance tuning
-# Smaller chunks = faster embeddings, more chunks to manage
-# Larger chunks = slower embeddings, better context preservation
-CHUNK_SIZE = int(os.getenv("RAGIFY_CHUNK_SIZE", "500"))  # reduced from 800
-CHUNK_OVERLAP = int(os.getenv("RAGIFY_CHUNK_OVERLAP", "100"))  # reduced from 200
 
 
 def save_upload(file_bytes: bytes, filename: str) -> str:

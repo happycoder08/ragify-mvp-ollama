@@ -7,11 +7,20 @@ import httpx
 
 from . import clients
 from .llm_providers import create_llm_provider, LLMProvider
+from app.config import (
+    REQUEST_TIMEOUT,
+    SIMILARITY_THRESHOLD,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    MAX_TOKENS_FAST,
+    MAX_TOKENS_FULL,
+    TOP_K_FAST,
+    TOP_K_FULL,
+    EMBEDDING_MODEL,
+    ENABLE_TIMING_LOGS,
+)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-# timeout (seconds) for requests to Ollama to avoid hanging the app
-# configurable via env for slow model cold-starts
-REQUEST_TIMEOUT = int(os.getenv("RAGIFY_OLLAMA_TIMEOUT", "300"))
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +29,8 @@ _llm_provider: LLMProvider = None
 
 def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
     """Log timing events with structured JSON (RAG service)."""
+    if not ENABLE_TIMING_LOGS:
+        return
     log_data = {
         "event": event,
         "duration_ms": round(duration * 1000, 2),
@@ -233,7 +244,7 @@ async def query_collection(tenant_id: str, question: str, top_k: int = 4, mode: 
     # ChromaDB uses squared Euclidean distance by default (not cosine)
     # Lower distance = higher similarity. For squared euclidean, typical relevant results are < 500
     # Very relevant: 0-200, Moderately relevant: 200-350, Irrelevant: > 350
-    SIMILARITY_THRESHOLD = 350  # Only allow highly and moderately relevant chunks
+    # Threshold configured in config.py based on RAGIFY_MODE
     filtered_results = [
         (doc, meta, dist) for doc, meta, dist in zip(docs, metas, distances)
         if dist < SIMILARITY_THRESHOLD
@@ -281,9 +292,9 @@ async def _call_chat_model(question: str, context: str, tenant_id: str, mode: st
         question: User's question
         context: Retrieved context from documents
         tenant_id: Tenant identifier
-        mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
+        mode: "fast" (concise, limited tokens) or "full" (detailed, more tokens)
     """
-    # Mode-specific prompts
+    # Mode-specific prompts and token limits (from config.py)
     if mode == "fast":
         prompt = f"""Answer briefly in 1-2 sentences.
 
@@ -293,7 +304,7 @@ Context:
 Question: {question}
 
 Answer:"""
-        max_tokens = 50
+        max_tokens = MAX_TOKENS_FAST
     else:
         prompt = f"""Answer the question based on the context below. Use the information provided to give a direct answer.
 
@@ -303,7 +314,7 @@ Context:
 Question: {question}
 
 Answer:"""
-        max_tokens = None  # No limit
+        max_tokens = MAX_TOKENS_FULL
 
     logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s", 
                 len(question), len(context), mode, max_tokens, is_mock_mode())

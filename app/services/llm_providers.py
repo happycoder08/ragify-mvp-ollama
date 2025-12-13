@@ -10,6 +10,8 @@ import time
 import logging
 import httpx
 
+from app.config import LLM_PROVIDER as DEFAULT_PROVIDER, LLM_MODEL as DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,7 @@ class OllamaLLMProvider:
     
     def __init__(self, base_url: str = None, model: str = None, http_client: httpx.AsyncClient = None):
         self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = model or os.getenv("LLM_MODEL", "llama3.2:1b")
+        self.model = model or DEFAULT_MODEL
         self.http_client = http_client
         logger.info(f"Initialized OllamaLLMProvider (url={self.base_url}, model={self.model})")
     
@@ -194,11 +196,13 @@ class OpenAILLMProvider:
 
 def create_llm_provider(http_client: httpx.AsyncClient = None) -> LLMProvider:
     """
-    Factory function to create the appropriate LLM provider based on environment variables.
+    Factory function to create the appropriate LLM provider based on configuration.
     
-    Environment variables:
-        LLM_PROVIDER: "ollama" (default) or "openai"
-        LLM_MODEL: Model name (e.g., "llama3.2:1b", "gpt-4", "gpt-3.5-turbo")
+    Uses centralized config from app.config (RAGIFY_MODE sets defaults).
+    
+    Environment variables (override config):
+        LLM_PROVIDER: "ollama" or "openai" (overrides config default)
+        LLM_MODEL: Model name (overrides config default)
         OLLAMA_BASE_URL: Ollama server URL (default: http://localhost:11434)
         OPENAI_API_KEY: OpenAI API key (required for OpenAI provider)
         OPENAI_BASE_URL: OpenAI API base URL (default: https://api.openai.com/v1)
@@ -206,7 +210,7 @@ def create_llm_provider(http_client: httpx.AsyncClient = None) -> LLMProvider:
     Returns:
         Configured LLM provider instance
     """
-    provider_type = os.getenv("LLM_PROVIDER", "ollama").lower()
+    provider_type = os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER).lower()
     
     if provider_type == "openai":
         return OpenAILLMProvider()

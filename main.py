@@ -15,11 +15,19 @@ import json
 from app.services import ingestion
 from app.services import rag_service
 from app.services import clients
-from app.services.rag_service import index_files, answer_question, is_mock_mode, REQUEST_TIMEOUT, reset_collection
+from app.services.rag_service import index_files, answer_question, is_mock_mode, reset_collection
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.database import init_db, get_db, test_connection
 from app.models import Document
 from app.tenant_config import get_tenant_config
+from app.config import (
+    RAGIFY_MODE,
+    DEFAULT_MODE,
+    TOP_K_FAST,
+    TOP_K_FULL,
+    ENABLE_TIMING_LOGS,
+    get_config_summary,
+)
 from sqlalchemy.orm import Session
 
 import os
@@ -34,6 +42,8 @@ request_id_var = contextvars.ContextVar('request_id', default=None)
 
 def log_timing(event: str, duration: float, tenant_id: str, **extra):
     """Log timing events with structured JSON."""
+    if not ENABLE_TIMING_LOGS:
+        return
     request_id = request_id_var.get()
     log_data = {
         "event": event,
@@ -66,6 +76,10 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Client initialization failed: {e}")
         raise
+    
+    # Log active configuration
+    config_summary = get_config_summary()
+    logger.info("RAGify configuration: %s", json.dumps(config_summary, indent=2))
 
 
 @app.on_event("shutdown")
@@ -136,10 +150,16 @@ async def get_config(current_user: dict = Depends(get_current_user)):
     return config
 
 
+@app.get("/api/system/config")
+async def get_system_config():
+    """Public endpoint: return active RAGify system configuration."""
+    return get_config_summary()
+
+
 class QueryRequest(BaseModel):
     question: str
     top_k: int = 4
-    mode: str = "fast"  # "fast" or "full"
+    mode: str = DEFAULT_MODE  # Configured via RAGIFY_MODE (dev/demo/prod)
 
 
 class QueryResponse(BaseModel):
@@ -245,9 +265,9 @@ async def query(payload: QueryRequest, current_user: dict = Depends(get_current_
     request_id = str(uuid.uuid4())
     request_id_var.set(request_id)
     
-    # Adjust top_k based on mode
-    mode = payload.mode.lower() if payload.mode else "fast"
-    top_k = 2 if mode == "fast" else payload.top_k
+    # Adjust top_k based on mode (using config defaults)
+    mode = payload.mode.lower() if payload.mode else DEFAULT_MODE
+    top_k = TOP_K_FAST if mode == "fast" else (payload.top_k if payload.top_k else TOP_K_FULL)
     
     logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d)", 
                 payload.question, tenant_id, request_id, mode, top_k)
