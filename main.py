@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import uuid
 import contextvars
 
@@ -18,7 +18,7 @@ from app.services import clients
 from app.services.rag_service import index_files, answer_question, is_mock_mode, reset_collection
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.database import init_db, get_db, test_connection
-from app.models import Document
+from app.models import Document, Conversation, Message
 from app.tenant_config import get_tenant_config
 from app.config import (
     RAGIFY_MODE,
@@ -26,9 +26,11 @@ from app.config import (
     TOP_K_FAST,
     TOP_K_FULL,
     ENABLE_TIMING_LOGS,
+    MAX_CONVERSATION_TURNS,
     get_config_summary,
 )
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 import os
 
@@ -160,11 +162,155 @@ class QueryRequest(BaseModel):
     question: str
     top_k: int = 4
     mode: str = DEFAULT_MODE  # Configured via RAGIFY_MODE (dev/demo/prod)
+    conversation_id: Optional[int] = None  # Optional conversation context
 
 
 class QueryResponse(BaseModel):
     answer: str
     sources: List[str]
+
+
+class ConversationCreate(BaseModel):
+    title: Optional[str] = None
+
+
+class MessageCreate(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+    sources: Optional[List[str]] = None
+
+
+@app.post("/api/conversations")
+async def create_conversation(
+    payload: ConversationCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new conversation for the authenticated user."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    conversation = Conversation(
+        tenant_id=tenant_id,
+        title=payload.title or f"Conversation {int(time.time())}"
+    )
+    
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+    
+    logger.info(f"Created conversation {conversation.id} for tenant {tenant_id}")
+    return conversation.to_dict()
+
+
+@app.get("/api/conversations")
+async def list_conversations(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 50
+):
+    """List all conversations for the authenticated user."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    conversations = db.query(Conversation)\
+        .filter(Conversation.tenant_id == tenant_id)\
+        .order_by(Conversation.updated_at.desc())\
+        .limit(limit)\
+        .all()
+    
+    return [conv.to_dict() for conv in conversations]
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(
+    conversation_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a specific conversation with all messages."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    conversation = db.query(Conversation)\
+        .filter(Conversation.id == conversation_id, Conversation.tenant_id == tenant_id)\
+        .first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    return conversation.to_dict(include_messages=True)
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+async def add_message(
+    conversation_id: int,
+    payload: MessageCreate,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Add a message to a conversation."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    # Verify conversation exists and belongs to tenant
+    conversation = db.query(Conversation)\
+        .filter(Conversation.id == conversation_id, Conversation.tenant_id == tenant_id)\
+        .first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    # Create message
+    sources_json = json.dumps(payload.sources) if payload.sources else None
+    message = Message(
+        conversation_id=conversation_id,
+        role=payload.role,
+        content=payload.content,
+        sources=sources_json
+    )
+    
+    db.add(message)
+    conversation.updated_at = func.now()  # Update conversation timestamp
+    db.commit()
+    db.refresh(message)
+    
+    logger.info(f"Added {payload.role} message to conversation {conversation_id}")
+    return message.to_dict()
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a conversation and all its messages."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    conversation = db.query(Conversation)\
+        .filter(Conversation.id == conversation_id, Conversation.tenant_id == tenant_id)\
+        .first()
+    
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    db.delete(conversation)
+    db.commit()
+    
+    logger.info(f"Deleted conversation {conversation_id} for tenant {tenant_id}")
+    return {"status": "ok", "deleted_id": conversation_id}
 
 
 @app.post("/api/upload")
@@ -256,7 +402,11 @@ async def upload(
 
 
 @app.post("/api/query")
-async def query(payload: QueryRequest, current_user: dict = Depends(get_current_user)):
+async def query(
+    payload: QueryRequest, 
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Protected endpoint: query documents in the authenticated user's tenant collection."""
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
@@ -269,17 +419,45 @@ async def query(payload: QueryRequest, current_user: dict = Depends(get_current_
     mode = payload.mode.lower() if payload.mode else DEFAULT_MODE
     top_k = TOP_K_FAST if mode == "fast" else (payload.top_k if payload.top_k else TOP_K_FULL)
     
-    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d)", 
-                payload.question, tenant_id, request_id, mode, top_k)
+    # Retrieve conversation history if conversation_id provided
+    conversation_history = []
+    conversation = None
+    if payload.conversation_id and db:
+        # Verify conversation ownership
+        conversation = db.query(Conversation)\
+            .filter(Conversation.id == payload.conversation_id, Conversation.tenant_id == tenant_id)\
+            .first()
+        
+        if conversation:
+            # Get last N messages for context (configured per mode)
+            messages = db.query(Message)\
+                .filter(Message.conversation_id == payload.conversation_id)\
+                .order_by(Message.created_at.desc())\
+                .limit(MAX_CONVERSATION_TURNS)\
+                .all()
+            conversation_history = list(reversed([msg.to_dict() for msg in messages]))
+            
+            # Save user question to conversation
+            user_msg = Message(
+                conversation_id=payload.conversation_id,
+                role="user",
+                content=payload.question
+            )
+            db.add(user_msg)
+            db.commit()
+    
+    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d, conversation_id=%s, history_len=%d)", 
+                payload.question, tenant_id, request_id, mode, top_k, payload.conversation_id, len(conversation_history))
     
     # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
     query_start = time.time()
-    answer_gen, sources = await answer_question(tenant_id, payload.question, top_k, mode=mode)
+    answer_gen, sources = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history)
     
     # Stream the answer tokens back to client
     async def stream_response():
         first_token = True
         token_count = 0
+        full_answer = ""  # Collect full answer for saving to conversation
         logger.info("Starting to stream response for request_id=%s", request_id)
         
         async for chunk in answer_gen:
@@ -288,6 +466,7 @@ async def query(payload: QueryRequest, current_user: dict = Depends(get_current_
                 logger.info("First token received for request_id=%s", request_id)
                 first_token = False
             token_count += 1
+            full_answer += chunk  # Collect for saving
             # Send each token as JSON + newline
             token_json = json.dumps({"token": chunk}) + "\n"
             logger.debug("Yielding token %d (len=%d) for request_id=%s", token_count, len(chunk), request_id)
@@ -298,6 +477,24 @@ async def query(payload: QueryRequest, current_user: dict = Depends(get_current_
                    question_length=len(payload.question), 
                    num_sources=len(sources),
                    tokens_generated=token_count)
+        
+        # Save assistant response to conversation
+        if conversation and db:
+            try:
+                assistant_msg = Message(
+                    conversation_id=payload.conversation_id,
+                    role="assistant",
+                    content=full_answer,
+                    sources=json.dumps(sources) if sources else None
+                )
+                db.add(assistant_msg)
+                conversation.updated_at = func.now()
+                db.commit()
+                logger.info("Saved assistant response to conversation %d", payload.conversation_id)
+            except Exception as e:
+                logger.error("Failed to save assistant response: %s", e)
+                # Don't fail the request if saving fails
+        
         # Final message with sources
         sources_json = json.dumps({"sources": sources}) + "\n"
         logger.info("Sending %d sources for request_id=%s: %s", len(sources), request_id, sources)

@@ -45,6 +45,9 @@ class ModeConfig:
         "reranker_top_n": None,  # None = use all retrieved docs
         "enable_reranking": False,  # Disable in dev for speed
         
+        # Conversation Settings
+        "max_conversation_turns": 10,  # Max messages to include in context (5 user + 5 assistant)
+        
         # Logging
         "log_level": "DEBUG",
         "enable_timing_logs": True,
@@ -77,6 +80,9 @@ class ModeConfig:
         "reranker_top_n": 2,  # Keep top 2 after reranking
         "enable_reranking": False,  # Disable for speed in demo
         
+        # Conversation Settings
+        "max_conversation_turns": 6,  # Last 6 messages (3 user + 3 assistant)
+        
         # Logging
         "log_level": "INFO",
         "enable_timing_logs": True,
@@ -108,6 +114,9 @@ class ModeConfig:
         "reranker_provider": os.getenv("RERANKER_PROVIDER", "none"),
         "reranker_top_n": 3,  # Keep top 3 after reranking
         "enable_reranking": True,  # Enable for better accuracy in prod
+        
+        # Conversation Settings
+        "max_conversation_turns": 8,  # Last 8 messages (4 user + 4 assistant)
         
         # Logging
         "log_level": "INFO",
@@ -149,6 +158,7 @@ EMBEDDING_MODEL = CONFIG["embedding_model"]
 RERANKER_PROVIDER = CONFIG["reranker_provider"]
 RERANKER_TOP_N = CONFIG["reranker_top_n"]
 ENABLE_RERANKING = CONFIG["enable_reranking"]
+MAX_CONVERSATION_TURNS = CONFIG["max_conversation_turns"]
 LOG_LEVEL = CONFIG["log_level"]
 ENABLE_TIMING_LOGS = CONFIG["enable_timing_logs"]
 

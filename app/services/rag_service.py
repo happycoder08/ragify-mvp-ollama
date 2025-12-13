@@ -203,7 +203,13 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str)
     return len(chunks)
 
 
-async def query_collection(tenant_id: str, question: str, top_k: int = 4, mode: str = "full") -> Tuple[AsyncGenerator[str, None], List[str]]:
+async def query_collection(
+    tenant_id: str, 
+    question: str, 
+    top_k: int = 4, 
+    mode: str = "full",
+    conversation_history: List[Dict] = None
+) -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Perform a similarity search in the tenant-specific collection and answer the question using retrieved context.
     Returns (answer_generator, list_of_source_files) where answer_generator yields tokens.
@@ -213,8 +219,10 @@ async def query_collection(tenant_id: str, question: str, top_k: int = 4, mode: 
         question: User's question
         top_k: Number of chunks to retrieve
         mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
+        conversation_history: Optional list of previous messages for context
     """
-    logger.info("Query received from tenant %s: %s", tenant_id, question)
+    logger.info("Query received from tenant %s: %s (history_len=%d)", 
+                tenant_id, question, len(conversation_history) if conversation_history else 0)
 
     # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
     if is_mock_mode():
@@ -338,11 +346,17 @@ async def query_collection(tenant_id: str, question: str, top_k: int = 4, mode: 
     context = "\n\n".join(context_pieces)
     log_timing_rag("prompt_building", time.time() - t_prompt, tenant_id, context_length=len(context))
     
-    answer_gen = _call_chat_model(question, context, tenant_id, mode=mode)
+    answer_gen = _call_chat_model(question, context, tenant_id, mode=mode, conversation_history=conversation_history)
     return answer_gen, dedup_sources
 
 
-async def _call_chat_model(question: str, context: str, tenant_id: str, mode: str = "full") -> AsyncGenerator[str, None]:
+async def _call_chat_model(
+    question: str, 
+    context: str, 
+    tenant_id: str, 
+    mode: str = "full",
+    conversation_history: List[Dict] = None
+) -> AsyncGenerator[str, None]:
     """
     Call the configured LLM provider with the retrieved context.
     Yields answer tokens as they arrive for streaming.
@@ -353,12 +367,20 @@ async def _call_chat_model(question: str, context: str, tenant_id: str, mode: st
         context: Retrieved context from documents
         tenant_id: Tenant identifier
         mode: "fast" (concise, limited tokens) or "full" (detailed, more tokens)
+        conversation_history: Optional list of previous messages for context
     """
+    # Build conversation history text
+    history_text = ""
+    if conversation_history:
+        for msg in conversation_history:
+            role_prefix = "User" if msg["role"] == "user" else "Assistant"
+            history_text += f"{role_prefix}: {msg['content']}\n\n"
+    
     # Mode-specific prompts and token limits (from config.py)
     if mode == "fast":
         prompt = f"""Answer briefly in 1-2 sentences.
 
-Context:
+{history_text if history_text else ""}Context:
 {context}
 
 Question: {question}
@@ -368,7 +390,7 @@ Answer:"""
     else:
         prompt = f"""Answer the question based on the context below. Use the information provided to give a direct answer.
 
-Context:
+{history_text if history_text else ""}Context:
 {context}
 
 Question: {question}
@@ -376,8 +398,8 @@ Question: {question}
 Answer:"""
         max_tokens = MAX_TOKENS_FULL
 
-    logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s", 
-                len(question), len(context), mode, max_tokens, is_mock_mode())
+    logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s history_len=%d", 
+                len(question), len(context), mode, max_tokens, is_mock_mode(), len(conversation_history) if conversation_history else 0)
     
     # If mock mode, yield canned response immediately
     if is_mock_mode():
@@ -452,7 +474,13 @@ async def index_files(tenant_id: str, chunks: List[str], source_filename: str) -
     return await add_documents(tenant_id, chunks, source_filename)
 
 
-async def answer_question(tenant_id: str, question: str, top_k: int = 4, mode: str = "full") -> Tuple[AsyncGenerator[str, None], List[str]]:
+async def answer_question(
+    tenant_id: str, 
+    question: str, 
+    top_k: int = 4, 
+    mode: str = "full",
+    conversation_history: List[Dict] = None
+) -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Convenience wrapper for query_collection with tenant support.
     
@@ -460,7 +488,8 @@ async def answer_question(tenant_id: str, question: str, top_k: int = 4, mode: s
         tenant_id: Tenant identifier
         question: User's question
         top_k: Number of chunks to retrieve
-        mode: \"fast\" (concise, max_tokens=50) or \"full\" (detailed, no token limit)
+        mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
+        conversation_history: Optional list of previous messages for context
     """
-    return await query_collection(tenant_id, question, top_k, mode=mode)
+    return await query_collection(tenant_id, question, top_k, mode=mode, conversation_history=conversation_history)
 
