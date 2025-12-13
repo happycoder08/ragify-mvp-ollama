@@ -250,6 +250,10 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
         .empty-state {
             text-align: center;
             color: #9ca3af;
@@ -495,7 +499,7 @@
                 const response = await fetchWithAuth('/api/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question, top_k: 4 })
+                    body: JSON.stringify({ question, top_k: 4, mode: 'fast' })  // Use fast mode for demo
                 });
 
                 if (!response.ok) {
@@ -506,17 +510,31 @@
                 const decoder = new TextDecoder();
                 let answer = '';
                 let sources = [];
+                let buffer = '';  // Buffer for incomplete lines
 
                 answerDiv.innerHTML = '';
+                
+                // Add visual indicator that streaming is happening
+                const cursor = document.createElement('span');
+                cursor.style.animation = 'blink 1s infinite';
+                cursor.textContent = '▋';
+                answerDiv.appendChild(cursor);
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n').filter(line => line.trim());
+                    // Decode chunk (handles partial UTF-8 characters correctly)
+                    const chunk = decoder.decode(value, { stream: true });
+                    buffer += chunk;
+                    
+                    // Split by newlines but keep incomplete last line
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';  // Keep last (potentially incomplete) line in buffer
 
                     for (const line of lines) {
+                        if (!line.trim()) continue;
+                        
                         try {
                             const data = JSON.parse(line);
                             if (data.sources) {
@@ -524,12 +542,31 @@
                             } else if (data.token) {
                                 answer += data.token;
                                 answerDiv.textContent = answer;
+                                answerDiv.appendChild(cursor);  // Keep cursor at end
                             }
                         } catch (e) {
-                            console.error('Parse error:', e);
+                            console.error('Parse error for line:', line, e);
                         }
                     }
                 }
+                
+                // Process any remaining buffered data
+                if (buffer.trim()) {
+                    try {
+                        const data = JSON.parse(buffer);
+                        if (data.sources) {
+                            sources = data.sources;
+                        } else if (data.token) {
+                            answer += data.token;
+                        }
+                    } catch (e) {
+                        console.error('Parse error for final buffer:', buffer, e);
+                    }
+                }
+                
+                // Remove cursor when done
+                cursor.remove();
+                answerDiv.textContent = answer;
 
                 if (sources.length > 0) {
                     sourcesDiv.style.display = 'block';

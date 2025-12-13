@@ -1,4 +1,6 @@
 from typing import List
+import uuid
+import contextvars
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -12,6 +14,7 @@ import json
 
 from app.services import ingestion
 from app.services import rag_service
+from app.services import clients
 from app.services.rag_service import index_files, answer_question, is_mock_mode, REQUEST_TIMEOUT, reset_collection
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.database import init_db, get_db, test_connection
@@ -26,10 +29,25 @@ logger = logging.getLogger("main")
 logging.basicConfig(level=logging.INFO)
 security = HTTPBearer()
 
+# Context variable for request tracking
+request_id_var = contextvars.ContextVar('request_id', default=None)
+
+def log_timing(event: str, duration: float, tenant_id: str, **extra):
+    """Log timing events with structured JSON."""
+    request_id = request_id_var.get()
+    log_data = {
+        "event": event,
+        "duration_ms": round(duration * 1000, 2),
+        "tenant_id": tenant_id,
+        "request_id": request_id,
+        **extra
+    }
+    logger.info(json.dumps(log_data))
+
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup."""
+    """Initialize database and clients on startup."""
     logger.info("Initializing database...")
     try:
         init_db()
@@ -39,14 +57,22 @@ async def startup_event():
             logger.warning("Database connection test failed - app will run without Postgres")
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}. App will run without Postgres.")
+    
+    # Initialize shared clients
+    try:
+        clients.initialize_chroma_client()
+        await clients.initialize_http_client()
+        logger.info("All clients initialized successfully")
+    except Exception as e:
+        logger.error(f"Client initialization failed: {e}")
+        raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close HTTP client on server shutdown."""
-    if rag_service._http_client is not None and not rag_service._http_client.is_closed:
-        await rag_service._http_client.aclose()
-        logger.info("HTTP client closed")
+    """Cleanup and close all clients on server shutdown."""
+    logger.info("Shutting down...")
+    await clients.shutdown_clients()
 
 # Allow simple CORS for local demo / front-end
 app.add_middleware(
@@ -113,6 +139,7 @@ async def get_config(current_user: dict = Depends(get_current_user)):
 class QueryRequest(BaseModel):
     question: str
     top_k: int = 4
+    mode: str = "fast"  # "fast" or "full"
 
 
 class QueryResponse(BaseModel):
@@ -131,15 +158,19 @@ async def upload(
         raise HTTPException(status_code=400, detail="No files uploaded.")
 
     tenant_id = current_user["tenant_id"]
+    request_id = str(uuid.uuid4())
+    request_id_var.set(request_id)
     total_chunks = 0
+    overall_start = time.time()
 
     for file in files:
-        start = time.time()
-        logger.info("Uploading file %s for tenant %s", file.filename, tenant_id)
+        file_start = time.time()
+        logger.info("Uploading file %s for tenant %s (request_id=%s)", file.filename, tenant_id, request_id)
         raw_bytes = await file.read()
         logger.info("Saved %d bytes for %s", len(raw_bytes), file.filename)
+        t_save = time.time()
         saved_path = ingestion.save_upload(raw_bytes, file.filename)
-        logger.info("Saved file to %s (took %.2fs)", saved_path, time.time() - start)
+        log_timing("file_save", time.time() - t_save, tenant_id, filename=file.filename, bytes=len(raw_bytes))
 
         # Create DB record if database is available
         if db:
@@ -159,12 +190,12 @@ async def upload(
 
         t0 = time.time()
         text = ingestion.load_file_to_text(saved_path)
-        logger.info("Loaded text length %d (took %.2fs)", len(text), time.time() - t0)
+        log_timing("document_parsing", time.time() - t0, tenant_id, filename=file.filename, text_length=len(text))
 
         t1 = time.time()
         try:
             chunks = ingestion.chunk_text(text)
-            logger.info("Created %d chunks (took %.2fs)", len(chunks), time.time() - t1)
+            log_timing("text_chunking", time.time() - t1, tenant_id, filename=file.filename, num_chunks=len(chunks))
         except MemoryError:
             logger.exception("Out of memory while chunking text; falling back to single-chunk")
             chunks = [text]
@@ -176,7 +207,7 @@ async def upload(
         logger.info("Indexing chunks for %s...", saved_path)
         try:
             num = await index_files(tenant_id, chunks, os.path.basename(saved_path))
-            logger.info("Indexed %d chunks for %s (took %.2fs)", num, saved_path, time.time() - t2)
+            log_timing("indexing_total", time.time() - t2, tenant_id, filename=file.filename, num_chunks=num)
             total_chunks += num
             
             # Update DB record to indexed
@@ -197,7 +228,10 @@ async def upload(
                     pass
             raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
         total_chunks += num
+        
+        log_timing("file_complete", time.time() - file_start, tenant_id, filename=file.filename)
 
+    log_timing("upload_complete", time.time() - overall_start, tenant_id, files_count=len(files), total_chunks=total_chunks)
     return {"status": "ok", "indexed_chunks": total_chunks}
 
 
@@ -208,16 +242,46 @@ async def query(payload: QueryRequest, current_user: dict = Depends(get_current_
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     tenant_id = current_user["tenant_id"]
-    answer_gen, sources = await answer_question(tenant_id, payload.question, payload.top_k)
+    request_id = str(uuid.uuid4())
+    request_id_var.set(request_id)
+    
+    # Adjust top_k based on mode
+    mode = payload.mode.lower() if payload.mode else "fast"
+    top_k = 2 if mode == "fast" else payload.top_k
+    
+    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d)", 
+                payload.question, tenant_id, request_id, mode, top_k)
+    
+    # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
+    query_start = time.time()
+    answer_gen, sources = await answer_question(tenant_id, payload.question, top_k, mode=mode)
     
     # Stream the answer tokens back to client
     async def stream_response():
-        # First send the sources as a JSON prefix
-        yield json.dumps({"sources": sources}) + "\n"
+        first_token = True
+        token_count = 0
+        logger.info("Starting to stream response for request_id=%s", request_id)
         
-        # Then stream answer tokens
-        async for token in answer_gen:
-            yield json.dumps({"token": token}) + "\n"
+        async for chunk in answer_gen:
+            if first_token:
+                log_timing("time_to_first_token", time.time() - query_start, tenant_id, question_length=len(payload.question))
+                logger.info("First token received for request_id=%s", request_id)
+                first_token = False
+            token_count += 1
+            # Send each token as JSON + newline
+            token_json = json.dumps({"token": chunk}) + "\n"
+            logger.debug("Yielding token %d (len=%d) for request_id=%s", token_count, len(chunk), request_id)
+            yield token_json
+        
+        logger.info("Finished streaming %d tokens for request_id=%s", token_count, request_id)
+        log_timing("query_complete", time.time() - query_start, tenant_id, 
+                   question_length=len(payload.question), 
+                   num_sources=len(sources),
+                   tokens_generated=token_count)
+        # Final message with sources
+        sources_json = json.dumps({"sources": sources}) + "\n"
+        logger.info("Sending %d sources for request_id=%s: %s", len(sources), request_id, sources)
+        yield sources_json
     
     return StreamingResponse(stream_response(), media_type="application/x-ndjson")
 

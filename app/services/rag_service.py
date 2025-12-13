@@ -1,34 +1,37 @@
 from typing import List, Tuple, AsyncGenerator, Dict, Any
 import json
-import httpx
-import chromadb
-from chromadb.config import Settings
-from functools import lru_cache
-
-from ..config import VECTOR_DIR
+import time
 import os
+import logging
+import httpx
+
+from . import clients
+from .llm_providers import create_llm_provider, LLMProvider
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 # timeout (seconds) for requests to Ollama to avoid hanging the app
 # configurable via env for slow model cold-starts
 REQUEST_TIMEOUT = int(os.getenv("RAGIFY_OLLAMA_TIMEOUT", "300"))
 
-import logging
 logger = logging.getLogger(__name__)
 
-# Initialise Chroma client and collection
-# Lazy-initialized Chroma client/collection to avoid blocking imports or
-# initialization when running in mock mode or when Chroma isn't available.
-chroma_client = None
-collection = None
+# Global LLM provider instance (initialized on first use)
+_llm_provider: LLMProvider = None
+
+def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
+    """Log timing events with structured JSON (RAG service)."""
+    log_data = {
+        "event": event,
+        "duration_ms": round(duration * 1000, 2),
+        "tenant_id": tenant_id,
+        **extra
+    }
+    logger.info(json.dumps(log_data))
 
 # Multi-tenant support: maintain separate collections per tenant
 _tenant_collections: Dict[str, Any] = {}
 
-# Persistent async HTTP client for connection pooling
-_http_client: httpx.AsyncClient = None
-
-# Embedding cache for frequently queried questions (LRU, max 128 entries)
+# Embedding cache for frequently queried questions (LRU, max cache)
 _embedding_cache: Dict[str, List[float]] = {}
 
 
@@ -36,22 +39,18 @@ def is_mock_mode() -> bool:
     return os.getenv("RAGIFY_MOCK", "0") == "1"
 
 
-async def _get_http_client() -> httpx.AsyncClient:
-    """Get or create persistent async HTTP client for pooled connections."""
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
-    return _http_client
+def _get_llm_provider() -> LLMProvider:
+    """Get or create the global LLM provider instance."""
+    global _llm_provider
+    if _llm_provider is None:
+        http_client = clients.get_http_client()
+        _llm_provider = create_llm_provider(http_client=http_client)
+    return _llm_provider
 
 
 def _get_collection(tenant_id: str = "default"):
-    """Ensure Chroma client/collection are initialized and return tenant-specific collection."""
-    global chroma_client, _tenant_collections
-    
-    if chroma_client is None:
-        chroma_client = chromadb.Client(
-            Settings(chroma_db_impl="duckdb+parquet", persist_directory=VECTOR_DIR)
-        )
+    """Get tenant-specific collection from centralized ChromaDB client."""
+    chroma_client = clients.get_chroma_client()
     
     # Get or create tenant-specific collection
     if tenant_id not in _tenant_collections:
@@ -76,7 +75,7 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
         emb = [0.0] * 8
         return [list(emb) for _ in texts]
 
-    client = await _get_http_client()
+    client = clients.get_http_client()
     embeddings: List[List[float]] = []
     
     # Try to get cached embeddings for single-text queries
@@ -112,7 +111,17 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     
     # Parallelize all embedding calls using persistent client connection pool
     import asyncio
+    t_start = time.time()
     embeddings = await asyncio.gather(*[embed_one(i, t) for i, t in enumerate(texts)])
+    total_time = time.time() - t_start
+    
+    # Log timing with all metrics in one JSON object
+    avg_text_length = sum(len(t) for t in texts) / len(texts) if texts else 0
+    log_timing_rag("embedding", total_time, "system", 
+                   num_texts=len(texts), 
+                   avg_length=int(avg_text_length),
+                   total_ms=round(total_time * 1000, 2),
+                   avg_ms_per_chunk=round((total_time * 1000) / len(texts), 2) if texts else 0)
     
     # Cache single-text embeddings for query optimization
     if len(texts) == 1:
@@ -135,30 +144,50 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str)
         return len(chunks)
 
     logger.info("Indexing %d chunks from %s for tenant %s", len(chunks), source_filename, tenant_id)
+    
+    # Embed all chunks with timing
+    t_embed_start = time.time()
     embeddings = await embed_texts(chunks)
+    embed_duration = time.time() - t_embed_start
+    # Detailed embedding timing already logged in embed_texts
+    
     collection = _get_collection(tenant_id)
     
     base_id = source_filename.replace(" ", "_")
     ids = [f"{base_id}_{i}" for i in range(len(chunks))]
     metadatas = [{"source_file": source_filename, "chunk": i} for i in range(len(chunks))]
+    
+    # Chroma upsert with timing
+    t_upsert = time.time()
     collection.add(
         ids=ids,
         embeddings=embeddings,
         documents=chunks,
         metadatas=metadatas,
     )
+    upsert_duration = time.time() - t_upsert
+    log_timing_rag("chroma_upsert", upsert_duration, tenant_id, 
+                   num_chunks=len(chunks),
+                   upsert_ms=round(upsert_duration * 1000, 2),
+                   source_file=source_filename)
     
-    global chroma_client
-    if chroma_client:
-        chroma_client.persist()
+    # Persist ChromaDB
+    chroma_client = clients.get_chroma_client()
+    chroma_client.persist()
     
     return len(chunks)
 
 
-async def query_collection(tenant_id: str, question: str, top_k: int = 4) -> Tuple[AsyncGenerator[str, None], List[str]]:
+async def query_collection(tenant_id: str, question: str, top_k: int = 4, mode: str = "full") -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Perform a similarity search in the tenant-specific collection and answer the question using retrieved context.
     Returns (answer_generator, list_of_source_files) where answer_generator yields tokens.
+    
+    Args:
+        tenant_id: Tenant identifier
+        question: User's question
+        top_k: Number of chunks to retrieve
+        mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
     """
     logger.info("Query received from tenant %s: %s", tenant_id, question)
 
@@ -168,25 +197,60 @@ async def query_collection(tenant_id: str, question: str, top_k: int = 4) -> Tup
             yield "(mocked) This is a canned answer used for local UI testing."
         return mock_gen(), []
 
-    # embed question
-    q_embedding = (await embed_texts([question]))[0]
+    # Check if collection is empty
+    collection = _get_collection(tenant_id)
+    if collection.count() == 0:
+        async def empty_gen():
+            yield "I don't have enough information in the provided documents to answer that question."
+        return empty_gen(), []
 
-    results = _get_collection(tenant_id).query(
+    # embed question
+    t_embed = time.time()
+    q_embedding = (await embed_texts([question]))[0]
+    # Embedding timing already logged in embed_texts
+
+    t_retrieval = time.time()
+    results = collection.query(
         query_embeddings=[q_embedding],
         n_results=top_k,
     )
+    log_timing_rag("chroma_retrieval", time.time() - t_retrieval, tenant_id, top_k=top_k)
 
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
     if not docs:
         async def not_found_gen():
             yield "I could not find anything relevant in the indexed documents."
         return not_found_gen(), []
 
+    # Log distances for debugging
+    logger.info("Retrieved %d chunks with distances: %s", len(distances), distances)
+
+    # Filter out chunks with low similarity
+    t_filter = time.time()
+    # ChromaDB uses squared Euclidean distance by default (not cosine)
+    # Lower distance = higher similarity. For squared euclidean, typical relevant results are < 500
+    # Very relevant: 0-200, Moderately relevant: 200-350, Irrelevant: > 350
+    SIMILARITY_THRESHOLD = 350  # Only allow highly and moderately relevant chunks
+    filtered_results = [
+        (doc, meta, dist) for doc, meta, dist in zip(docs, metas, distances)
+        if dist < SIMILARITY_THRESHOLD
+    ]
+
+    log_timing_rag("similarity_filtering", time.time() - t_filter, tenant_id, 
+                   before=len(docs), after=len(filtered_results), threshold=SIMILARITY_THRESHOLD)
+    logger.info("After filtering (threshold=%.2f): %d chunks remain", SIMILARITY_THRESHOLD, len(filtered_results))
+
+    if not filtered_results:
+        async def not_relevant_gen():
+            yield "I could not find anything relevant in the indexed documents to answer that question."
+        return not_relevant_gen(), []
+
     context_pieces: List[str] = []
     sources: List[str] = []
-    for doc, meta in zip(docs, metas):
+    for doc, meta, dist in filtered_results:
         src = meta.get("source_file", "unknown")
         context_pieces.append(f"[{src}] {doc}")
         sources.append(src)
@@ -199,62 +263,78 @@ async def query_collection(tenant_id: str, question: str, top_k: int = 4) -> Tup
             seen.add(s)
             dedup_sources.append(s)
 
+    t_prompt = time.time()
     context = "\n\n".join(context_pieces)
-    answer_gen = _call_chat_model(question, context)
+    log_timing_rag("prompt_building", time.time() - t_prompt, tenant_id, context_length=len(context))
+    
+    answer_gen = _call_chat_model(question, context, tenant_id, mode=mode)
     return answer_gen, dedup_sources
 
 
-async def _call_chat_model(question: str, context: str) -> AsyncGenerator[str, None]:
+async def _call_chat_model(question: str, context: str, tenant_id: str, mode: str = "full") -> AsyncGenerator[str, None]:
     """
-    Call a local Ollama chat model (llama3) with the retrieved context.
+    Call the configured LLM provider with the retrieved context.
     Yields answer tokens as they arrive for streaming.
-    Uses persistent async client for connection pooling.
-    Run `ollama pull llama3` first.
+    Supports multiple providers via LLM_PROVIDER env var (ollama, openai).
+    
+    Args:
+        question: User's question
+        context: Retrieved context from documents
+        tenant_id: Tenant identifier
+        mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
     """
-    prompt = f"""
-You are a business assistant that answers questions STRICTLY using the provided context.
-If the answer is not in the context, say you don't know.
+    # Mode-specific prompts
+    if mode == "fast":
+        prompt = f"""Answer briefly in 1-2 sentences.
 
 Context:
 {context}
 
 Question: {question}
-"""
 
-    # Streamed response from Ollama
-    logger.info("Calling chat model (llama3) for question (len=%d) with context length %d mock=%s", len(question), len(context), is_mock_mode())
+Answer:"""
+        max_tokens = 50
+    else:
+        prompt = f"""Answer the question based on the context below. Use the information provided to give a direct answer.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
+        max_tokens = None  # No limit
+
+    logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s", 
+                len(question), len(context), mode, max_tokens, is_mock_mode())
     
     # If mock mode, yield canned response immediately
     if is_mock_mode():
         yield "(mocked) This is a canned answer used for local UI testing."
         return
 
-    client = await _get_http_client()
+    # Get LLM provider and track timing
+    llm_provider = _get_llm_provider()
+    t_llm = time.time()
+    first_token_logged = False
+    
+    def on_first_token(duration: float):
+        """Callback when first token arrives."""
+        nonlocal first_token_logged
+        if not first_token_logged:
+            log_timing_rag("llm_first_token", duration, tenant_id, prompt_length=len(prompt))
+            first_token_logged = True
     
     try:
-        async with client.stream(
-            "POST",
-            f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model": "llama3", "prompt": prompt, "stream": True},
-        ) as resp:
-            resp.raise_for_status()
-            
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                data = json.loads(line)
-                token = data.get("response", "")
-                if token:
-                    yield token
-                if data.get("done"):
-                    break
-                    
-    except httpx.HTTPError as e:
-        logger.exception("Chat generation request failed: %s", e)
-        raise RuntimeError(
-            f"Failed to call Ollama chat API at {OLLAMA_BASE_URL}. "
-            f"Ensure Ollama is running and the 'llama3' model is available. Original error: {e}"
-        )
+        async for token in llm_provider.generate_stream(prompt, tenant_id, max_tokens=max_tokens, on_first_token=on_first_token):
+            yield token
+        
+        # Log completion timing
+        log_timing_rag("llm_generation_complete", time.time() - t_llm, tenant_id)
+        
+    except Exception as e:
+        logger.exception("LLM generation request failed: %s", e)
+        raise
 
 
 def clear_embedding_cache() -> None:
@@ -270,7 +350,7 @@ def reset_collection(tenant_id: str = "default") -> None:
     Also clears the embedding cache.
     Useful for testing or starting fresh with new documents.
     """
-    global chroma_client, _tenant_collections
+    global _tenant_collections
     
     logger.info("Resetting ChromaDB collection for tenant: %s", tenant_id)
     
@@ -278,17 +358,17 @@ def reset_collection(tenant_id: str = "default") -> None:
     clear_embedding_cache()
     
     # Delete tenant-specific collection
-    if chroma_client is not None:
-        collection_name = f"documents_{tenant_id}"
-        try:
-            chroma_client.delete_collection(collection_name)
-            logger.info("Deleted collection: %s", collection_name)
-        except Exception as e:
-            logger.warning("Could not delete collection %s: %s", collection_name, e)
-        
-        # Remove from cache
-        if tenant_id in _tenant_collections:
-            del _tenant_collections[tenant_id]
+    chroma_client = clients.get_chroma_client()
+    collection_name = f"documents_{tenant_id}"
+    try:
+        chroma_client.delete_collection(collection_name)
+        logger.info("Deleted collection: %s", collection_name)
+    except Exception as e:
+        logger.warning("Could not delete collection %s: %s", collection_name, e)
+    
+    # Remove from cache
+    if tenant_id in _tenant_collections:
+        del _tenant_collections[tenant_id]
     
     logger.info("Collection reset complete for tenant: %s", tenant_id)
 
@@ -301,9 +381,15 @@ async def index_files(tenant_id: str, chunks: List[str], source_filename: str) -
     return await add_documents(tenant_id, chunks, source_filename)
 
 
-async def answer_question(tenant_id: str, question: str, top_k: int = 4) -> Tuple[AsyncGenerator[str, None], List[str]]:
+async def answer_question(tenant_id: str, question: str, top_k: int = 4, mode: str = "full") -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Convenience wrapper for query_collection with tenant support.
+    
+    Args:
+        tenant_id: Tenant identifier
+        question: User's question
+        top_k: Number of chunks to retrieve
+        mode: \"fast\" (concise, max_tokens=50) or \"full\" (detailed, no token limit)
     """
-    return await query_collection(tenant_id, question, top_k)
+    return await query_collection(tenant_id, question, top_k, mode=mode)
 
