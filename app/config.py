@@ -56,13 +56,13 @@ class ModeConfig:
     DEMO = {
         # LLM Settings - optimized for speed
         "default_mode": "fast",
-        "max_tokens_fast": 50,  # Brief answers only
+        "max_tokens_fast": 100,  # Reasonable answers (was 50 "tweet mode")
         "max_tokens_full": 150,
-        "top_k_fast": 2,  # Minimal context
-        "top_k_full": 4,
+        "top_k_fast": 15,  # Retrieve more, then filter (was 2)
+        "top_k_full": 20,  # Retrieve more, then filter (was 4)
         
-        # Retrieval Settings - strict relevance
-        "similarity_threshold": 350,
+        # Retrieval Settings - more lenient for better recall
+        "similarity_threshold": 400,  # Higher = more lenient (was 350, too strict)
         "chunk_size": 800,
         "chunk_overlap": 200,
         
@@ -75,10 +75,13 @@ class ModeConfig:
         "llm_model": "llama3.2:1b",
         "embedding_model": "nomic-embed-text",
         
-        # Reranker Settings
+        # Reranker Settings - better filtering after retrieval
         "reranker_provider": "none",  # none, jina, cohere
-        "reranker_top_n": 2,  # Keep top 2 after reranking
+        "reranker_top_n": 4,  # Keep top 4 best chunks after scoring/filtering
         "enable_reranking": False,  # Disable for speed in demo
+        
+        # Context Budget
+        "context_budget_chars": 12000,  # Cap context at 12k chars (~3k tokens)
         
         # Conversation Settings
         "max_conversation_turns": 6,  # Last 6 messages (3 user + 3 assistant)
@@ -158,6 +161,7 @@ EMBEDDING_MODEL = CONFIG["embedding_model"]
 RERANKER_PROVIDER = CONFIG["reranker_provider"]
 RERANKER_TOP_N = CONFIG["reranker_top_n"]
 ENABLE_RERANKING = CONFIG["enable_reranking"]
+CONTEXT_BUDGET_CHARS = CONFIG.get("context_budget_chars", None)  # Optional context char limit
 MAX_CONVERSATION_TURNS = CONFIG["max_conversation_turns"]
 LOG_LEVEL = CONFIG["log_level"]
 ENABLE_TIMING_LOGS = CONFIG["enable_timing_logs"]

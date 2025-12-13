@@ -154,6 +154,12 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .doc-checkbox {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: var(--primary-color, #3b82f6);
+        }
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
         .doc-info {
@@ -473,11 +479,15 @@
                             const reindexBtn = (doc.status === 'failed' || doc.status === 'indexed') 
                                 ? `<button class="reindex-btn" onclick="reindexDocument(${doc.id}, '${doc.filename}')">🔄 Reindex</button>` 
                                 : '';
+                            const isIndexed = doc.status === 'indexed';
                             
                             return `
                                 <div class="document-item">
                                     <div class="doc-info">
-                                        <div class="doc-name">${doc.filename}</div>
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            ${isIndexed ? `<input type="checkbox" class="doc-checkbox" data-doc-id="${doc.id}" checked>` : ''}
+                                            <div class="doc-name">${doc.filename}</div>
+                                        </div>
                                         <div class="doc-meta">Uploaded: ${new Date(doc.created_at).toLocaleString()}</div>
                                         <div class="doc-meta">Updated: ${new Date(doc.updated_at).toLocaleString()}</div>
                                         ${doc.error_message ? `<div class="doc-meta" style="color: #dc2626;">Error: ${doc.error_message}</div>` : ''}
@@ -609,10 +619,25 @@
             sourcesDiv.style.display = 'none';
 
             try {
+                // Collect selected document IDs from checkboxes
+                const selectedDocs = Array.from(document.querySelectorAll('.doc-checkbox:checked'))
+                    .map(cb => parseInt(cb.dataset.docId));
+                
+                const payload = { 
+                    question, 
+                    top_k: 4, 
+                    mode: 'fast'  // Use fast mode for demo
+                };
+                
+                // Only include doc_ids if at least one is selected
+                if (selectedDocs.length > 0) {
+                    payload.doc_ids = selectedDocs;
+                }
+
                 const response = await fetchWithAuth('/api/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question, top_k: 4, mode: 'fast' })  // Use fast mode for demo
+                    body: JSON.stringify(payload)
                 });
 
                 if (!response.ok) {

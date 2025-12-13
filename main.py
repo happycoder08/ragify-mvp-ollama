@@ -187,6 +187,7 @@ class QueryRequest(BaseModel):
     top_k: int = 4
     mode: str = DEFAULT_MODE  # Configured via RAGIFY_MODE (dev/demo/prod)
     conversation_id: Optional[int] = None  # Optional conversation context
+    doc_ids: Optional[List[int]] = None  # Optional document IDs to filter search scope
 
 
 class QueryResponse(BaseModel):
@@ -365,10 +366,10 @@ async def process_document_background(doc_id: int, tenant_id: str, file_path: st
             logger.exception("Unexpected error while chunking text; falling back to single-chunk")
             chunks = [text]
 
-        # Index chunks
+        # Index chunks with doc_id for filtering
         t2 = time.time()
         logger.info("Indexing chunks for %s...", file_path)
-        num = await index_files(tenant_id, chunks, filename)
+        num = await index_files(tenant_id, chunks, filename, doc_id=doc_id)
         log_timing("indexing_total", time.time() - t2, tenant_id, filename=filename, num_chunks=num)
         
         # Update DB record to indexed
@@ -549,12 +550,12 @@ async def query(
             db.add(user_msg)
             db.commit()
     
-    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d, conversation_id=%s, history_len=%d)", 
-                payload.question, tenant_id, request_id, mode, top_k, payload.conversation_id, len(conversation_history))
+    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d, conversation_id=%s, history_len=%d, doc_ids=%s)", 
+                payload.question, tenant_id, request_id, mode, top_k, payload.conversation_id, len(conversation_history), payload.doc_ids)
     
     # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
     query_start = time.time()
-    answer_gen, sources = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history)
+    answer_gen, sources = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids)
     
     # Stream the answer tokens back to client
     async def stream_response():

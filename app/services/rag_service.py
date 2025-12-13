@@ -22,6 +22,7 @@ from app.config import (
     ENABLE_TIMING_LOGS,
     ENABLE_RERANKING,
     RERANKER_TOP_N,
+    CONTEXT_BUDGET_CHARS,
 )
 
 OLLAMA_BASE_URL = "http://localhost:11434"
@@ -156,10 +157,16 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     return embeddings
 
 
-async def add_documents(tenant_id: str, chunks: List[str], source_filename: str) -> int:
+async def add_documents(tenant_id: str, chunks: List[str], source_filename: str, doc_id: int = None) -> int:
     """
     Add chunks for a given source file into the tenant-specific Chroma collection.
     Returns number of chunks indexed.
+    
+    Args:
+        tenant_id: Tenant identifier
+        chunks: List of text chunks
+        source_filename: Original filename
+        doc_id: Database document ID for filtering (optional)
     """
     if not chunks:
         return 0
@@ -169,7 +176,7 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str)
         logger.info("MOCK_MODE: skipping Chroma indexing for %s (tenant=%s) — returning %d chunks", source_filename, tenant_id, len(chunks))
         return len(chunks)
 
-    logger.info("Indexing %d chunks from %s for tenant %s", len(chunks), source_filename, tenant_id)
+    logger.info("Indexing %d chunks from %s for tenant %s (doc_id=%s)", len(chunks), source_filename, tenant_id, doc_id)
     
     # Embed all chunks with timing
     t_embed_start = time.time()
@@ -181,7 +188,16 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str)
     
     base_id = source_filename.replace(" ", "_")
     ids = [f"{base_id}_{i}" for i in range(len(chunks))]
-    metadatas = [{"source_file": source_filename, "chunk": i} for i in range(len(chunks))]
+    # Store doc_id and filename metadata for filtering
+    metadatas = [
+        {
+            "source_file": source_filename, 
+            "chunk": i,
+            "doc_id": doc_id if doc_id is not None else -1,
+            "filename": source_filename
+        } 
+        for i in range(len(chunks))
+    ]
     
     # Chroma upsert with timing
     t_upsert = time.time()
@@ -209,7 +225,8 @@ async def query_collection(
     question: str, 
     top_k: int = 4, 
     mode: str = "full",
-    conversation_history: List[Dict] = None
+    conversation_history: List[Dict] = None,
+    doc_ids: List[int] = None
 ) -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Perform a similarity search in the tenant-specific collection and answer the question using retrieved context.
@@ -221,9 +238,10 @@ async def query_collection(
         top_k: Number of chunks to retrieve
         mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
         conversation_history: Optional list of previous messages for context
+        doc_ids: Optional list of document IDs to filter retrieval (document-scoped search)
     """
-    logger.info("Query received from tenant %s: %s (history_len=%d)", 
-                tenant_id, question, len(conversation_history) if conversation_history else 0)
+    logger.info("Query received from tenant %s: %s (history_len=%d, doc_ids=%s)", 
+                tenant_id, question, len(conversation_history) if conversation_history else 0, doc_ids)
 
     # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
     if is_mock_mode():
@@ -244,11 +262,19 @@ async def query_collection(
     # Embedding timing already logged in embed_texts
 
     t_retrieval = time.time()
+    # Build metadata filter if doc_ids provided
+    where_filter = None
+    if doc_ids:
+        # Filter to only chunks from specified documents
+        where_filter = {"doc_id": {"$in": doc_ids}}
+        logger.info("Applying doc_ids filter: %s", where_filter)
+    
     results = collection.query(
         query_embeddings=[q_embedding],
         n_results=top_k,
+        where=where_filter,
     )
-    log_timing_rag("chroma_retrieval", time.time() - t_retrieval, tenant_id, top_k=top_k)
+    log_timing_rag("chroma_retrieval", time.time() - t_retrieval, tenant_id, top_k=top_k, doc_filter=bool(doc_ids))
 
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
@@ -281,6 +307,17 @@ async def query_collection(
         async def not_relevant_gen():
             yield "I could not find anything relevant in the indexed documents to answer that question."
         return not_relevant_gen(), []
+
+    # Sort by distance (best first) and limit to best chunks
+    # In demo mode: retrieve 15-20, filter by threshold, then take best 4-6
+    filtered_results = sorted(filtered_results, key=lambda x: x[2])  # Sort by distance (lower = better)
+    
+    # Limit to best N chunks after sorting
+    max_chunks = RERANKER_TOP_N if RERANKER_TOP_N else min(6, len(filtered_results))
+    if len(filtered_results) > max_chunks:
+        logger.info("Limiting from %d to top %d best chunks after distance-based scoring", 
+                   len(filtered_results), max_chunks)
+        filtered_results = filtered_results[:max_chunks]
 
     # Rerank filtered results if enabled
     if ENABLE_RERANKING and len(filtered_results) > 1:
@@ -345,7 +382,20 @@ async def query_collection(
 
     t_prompt = time.time()
     context = "\n\n".join(context_pieces)
-    log_timing_rag("prompt_building", time.time() - t_prompt, tenant_id, context_length=len(context))
+    
+    # Apply context budget if configured
+    context_char_count = len(context)
+    if CONTEXT_BUDGET_CHARS and context_char_count > CONTEXT_BUDGET_CHARS:
+        logger.info("Context exceeds budget (%d > %d chars), truncating", 
+                   context_char_count, CONTEXT_BUDGET_CHARS)
+        context = context[:CONTEXT_BUDGET_CHARS]
+        context_char_count = len(context)
+    
+    log_timing_rag("prompt_building", time.time() - t_prompt, tenant_id, 
+                   context_length=context_char_count,
+                   context_char_count=context_char_count,
+                   num_chunks=len(filtered_results),
+                   budget_chars=CONTEXT_BUDGET_CHARS or "unlimited")
     
     answer_gen = _call_chat_model(question, context, tenant_id, mode=mode, conversation_history=conversation_history)
     return answer_gen, dedup_sources
@@ -477,11 +527,11 @@ def reset_collection(tenant_id: str = "default") -> None:
 
 
 # Wrapper functions for backward compatibility and convenience
-async def index_files(tenant_id: str, chunks: List[str], source_filename: str) -> int:
+async def index_files(tenant_id: str, chunks: List[str], source_filename: str, doc_id: int = None) -> int:
     """
     Convenience wrapper for add_documents with tenant support.
     """
-    return await add_documents(tenant_id, chunks, source_filename)
+    return await add_documents(tenant_id, chunks, source_filename, doc_id=doc_id)
 
 
 async def answer_question(
@@ -489,7 +539,8 @@ async def answer_question(
     question: str, 
     top_k: int = 4, 
     mode: str = "full",
-    conversation_history: List[Dict] = None
+    conversation_history: List[Dict] = None,
+    doc_ids: List[int] = None
 ) -> Tuple[AsyncGenerator[str, None], List[str]]:
     """
     Convenience wrapper for query_collection with tenant support.
@@ -500,6 +551,7 @@ async def answer_question(
         top_k: Number of chunks to retrieve
         mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
         conversation_history: Optional list of previous messages for context
+        doc_ids: Optional list of document IDs to filter retrieval (document-scoped search)
     """
-    return await query_collection(tenant_id, question, top_k, mode=mode, conversation_history=conversation_history)
+    return await query_collection(tenant_id, question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=doc_ids)
 
