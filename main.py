@@ -20,6 +20,13 @@ from app.auth import authenticate_user, create_access_token, get_current_user
 from app.database import init_db, get_db, test_connection
 from app.models import Document, Conversation, Message
 from app.tenant_config import get_tenant_config
+from app.guardrails import (
+    get_rate_limiter,
+    get_guardrail_config,
+    validate_file_extension,
+    validate_file_size,
+    validate_file_count,
+)
 from app.config import (
     RAGIFY_MODE,
     DEFAULT_MODE,
@@ -150,6 +157,23 @@ async def get_config(current_user: dict = Depends(get_current_user)):
     if not config:
         raise HTTPException(status_code=404, detail="Tenant configuration not found")
     return config
+
+
+@app.get("/api/guardrails")
+async def get_guardrails(current_user: dict = Depends(get_current_user)):
+    """Protected endpoint: return tenant-specific guardrail limits."""
+    tenant_id = current_user["tenant_id"]
+    config = get_guardrail_config(tenant_id)
+    return config.to_dict()
+
+
+@app.get("/api/rate-limit-status")
+async def get_rate_limit_status(current_user: dict = Depends(get_current_user)):
+    """Protected endpoint: return current rate limit usage for tenant."""
+    tenant_id = current_user["tenant_id"]
+    rate_limiter = get_rate_limiter()
+    usage = rate_limiter.get_current_usage(tenant_id)
+    return usage
 
 
 @app.get("/api/system/config")
@@ -326,6 +350,43 @@ async def upload(
     tenant_id = current_user["tenant_id"]
     request_id = str(uuid.uuid4())
     request_id_var.set(request_id)
+    
+    # Validate file count
+    valid, error_msg = validate_file_count(len(files), tenant_id)
+    if not valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+    
+    # Calculate total upload size and validate each file
+    total_upload_size_bytes = 0
+    for file in files:
+        # Validate file extension
+        valid, error_msg = validate_file_extension(file.filename, tenant_id)
+        if not valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        # Read file size (FastAPI UploadFile doesn't expose size directly)
+        content = await file.read()
+        file_size = len(content)
+        total_upload_size_bytes += file_size
+        
+        # Validate file size
+        valid, error_msg = validate_file_size(file_size, tenant_id)
+        if not valid:
+            raise HTTPException(status_code=413, detail=error_msg)
+        
+        # Reset file pointer for later reading
+        await file.seek(0)
+    
+    # Check rate limits
+    total_upload_mb = total_upload_size_bytes / (1024 * 1024)
+    rate_limiter = get_rate_limiter()
+    allowed, error_msg = rate_limiter.check_rate_limit(tenant_id, total_upload_mb)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=error_msg)
+    
+    # Record request for rate limiting
+    rate_limiter.record_request(tenant_id, total_upload_mb)
+    
     total_chunks = 0
     overall_start = time.time()
 
@@ -412,6 +473,16 @@ async def query(
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     tenant_id = current_user["tenant_id"]
+    
+    # Check rate limits
+    rate_limiter = get_rate_limiter()
+    allowed, error_msg = rate_limiter.check_rate_limit(tenant_id, upload_size_mb=0)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=error_msg)
+    
+    # Record request for rate limiting
+    rate_limiter.record_request(tenant_id, upload_size_mb=0)
+    
     request_id = str(uuid.uuid4())
     request_id_var.set(request_id)
     

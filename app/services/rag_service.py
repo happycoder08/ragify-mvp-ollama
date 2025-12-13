@@ -8,6 +8,7 @@ import httpx
 from . import clients
 from .llm_providers import create_llm_provider, LLMProvider
 from .reranker_providers import create_reranker_provider, RerankerProvider
+from app.guardrails import get_guardrail_config
 from app.config import (
     REQUEST_TIMEOUT,
     SIMILARITY_THRESHOLD,
@@ -406,8 +407,11 @@ Answer:"""
         yield "(mocked) This is a canned answer used for local UI testing."
         return
 
-    # Get LLM provider and track timing
+    # Get LLM provider and guardrail config for timeout
     llm_provider = _get_llm_provider()
+    guardrail_config = get_guardrail_config(tenant_id)
+    llm_timeout = guardrail_config.llm_timeout_seconds
+    
     t_llm = time.time()
     first_token_logged = False
     
@@ -419,7 +423,13 @@ Answer:"""
             first_token_logged = True
     
     try:
-        async for token in llm_provider.generate_stream(prompt, tenant_id, max_tokens=max_tokens, on_first_token=on_first_token):
+        async for token in llm_provider.generate_stream(
+            prompt, 
+            tenant_id, 
+            max_tokens=max_tokens, 
+            on_first_token=on_first_token,
+            timeout=llm_timeout
+        ):
             yield token
         
         # Log completion timing

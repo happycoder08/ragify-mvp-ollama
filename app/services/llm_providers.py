@@ -23,7 +23,8 @@ class LLMProvider(Protocol):
         prompt: str, 
         tenant_id: str,
         max_tokens: int = None,
-        on_first_token: callable = None
+        on_first_token: callable = None,
+        timeout: int = None
     ) -> AsyncGenerator[str, None]:
         """
         Generate text from prompt with streaming.
@@ -33,6 +34,7 @@ class LLMProvider(Protocol):
             tenant_id: Tenant identifier for logging
             max_tokens: Maximum tokens to generate (None for no limit)
             on_first_token: Optional callback(duration_ms) called when first token arrives
+            timeout: Request timeout in seconds (None for default)
             
         Yields:
             Text tokens as they arrive
@@ -54,15 +56,19 @@ class OllamaLLMProvider:
         prompt: str, 
         tenant_id: str,
         max_tokens: int = None,
-        on_first_token: callable = None
+        on_first_token: callable = None,
+        timeout: int = None
     ) -> AsyncGenerator[str, None]:
         """Generate text using Ollama streaming API."""
-        logger.info("Calling Ollama model %s for tenant %s (prompt_len=%d, max_tokens=%s)", 
-                   self.model, tenant_id, len(prompt), max_tokens)
+        logger.info("Calling Ollama model %s for tenant %s (prompt_len=%d, max_tokens=%s, timeout=%s)", 
+                   self.model, tenant_id, len(prompt), max_tokens, timeout)
         
         t_start = time.time()
         first_token_sent = False
         token_count = 0
+        
+        # Use provided timeout or default to 300 seconds
+        request_timeout = timeout or 300
         
         try:
             # Build request payload
@@ -74,6 +80,7 @@ class OllamaLLMProvider:
                 "POST",
                 f"{self.base_url}/api/generate",
                 json=payload,
+                timeout=request_timeout,
             ) as resp:
                 resp.raise_for_status()
                 
