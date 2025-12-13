@@ -2,7 +2,7 @@ from typing import List, Optional
 import uuid
 import contextvars
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -337,13 +337,67 @@ async def delete_conversation(
     return {"status": "ok", "deleted_id": conversation_id}
 
 
+async def process_document_background(doc_id: int, tenant_id: str, file_path: str, filename: str):
+    """
+    Background task to process and index a document.
+    Updates document status in database.
+    """
+    from app.database import SessionLocal
+    db = SessionLocal()
+    
+    try:
+        logger.info(f"Background processing started for document {doc_id}: {filename}")
+        
+        # Load and parse document
+        t0 = time.time()
+        text = ingestion.load_file_to_text(file_path)
+        log_timing("document_parsing", time.time() - t0, tenant_id, filename=filename, text_length=len(text))
+
+        # Chunk text
+        t1 = time.time()
+        try:
+            chunks = ingestion.chunk_text(text)
+            log_timing("text_chunking", time.time() - t1, tenant_id, filename=filename, num_chunks=len(chunks))
+        except MemoryError:
+            logger.exception("Out of memory while chunking text; falling back to single-chunk")
+            chunks = [text]
+        except Exception:
+            logger.exception("Unexpected error while chunking text; falling back to single-chunk")
+            chunks = [text]
+
+        # Index chunks
+        t2 = time.time()
+        logger.info("Indexing chunks for %s...", file_path)
+        num = await index_files(tenant_id, chunks, filename)
+        log_timing("indexing_total", time.time() - t2, tenant_id, filename=filename, num_chunks=num)
+        
+        # Update DB record to indexed
+        doc_record = db.query(Document).filter(Document.id == doc_id).first()
+        if doc_record:
+            doc_record.status = "indexed"
+            doc_record.error_message = None
+            db.commit()
+            logger.info(f"Document {doc_id} indexed successfully ({num} chunks)")
+        
+    except Exception as e:
+        logger.exception(f"Background indexing failed for document {doc_id}: {e}")
+        doc_record = db.query(Document).filter(Document.id == doc_id).first()
+        if doc_record:
+            doc_record.status = "failed"
+            doc_record.error_message = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
 @app.post("/api/upload")
 async def upload(
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Protected endpoint: upload and index documents for the authenticated user's tenant."""
+    """Protected endpoint: upload documents and start background indexing."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
 
@@ -387,7 +441,7 @@ async def upload(
     # Record request for rate limiting
     rate_limiter.record_request(tenant_id, total_upload_mb)
     
-    total_chunks = 0
+    uploaded_docs = []
     overall_start = time.time()
 
     for file in files:
@@ -399,67 +453,45 @@ async def upload(
         saved_path = ingestion.save_upload(raw_bytes, file.filename)
         log_timing("file_save", time.time() - t_save, tenant_id, filename=file.filename, bytes=len(raw_bytes))
 
-        # Create DB record if database is available
+        # Create DB record with "pending" status
+        doc_record = None
         if db:
             try:
                 doc_record = Document(
                     tenant_id=tenant_id,
                     filename=file.filename,
                     file_path=saved_path,
-                    status="indexing"
+                    status="pending"
                 )
                 db.add(doc_record)
                 db.commit()
-                logger.info("Created DB record for %s", file.filename)
+                db.refresh(doc_record)
+                logger.info("Created DB record for %s (id=%d)", file.filename, doc_record.id)
+                uploaded_docs.append(doc_record.to_dict())
+                
+                # Schedule background processing
+                background_tasks.add_task(
+                    process_document_background,
+                    doc_record.id,
+                    tenant_id,
+                    saved_path,
+                    file.filename
+                )
+                logger.info(f"Scheduled background processing for document {doc_record.id}")
+                
             except Exception as e:
-                logger.warning("Could not create DB record: %s", e)
+                logger.exception("Could not create DB record: %s", e)
                 db.rollback()
-
-        t0 = time.time()
-        text = ingestion.load_file_to_text(saved_path)
-        log_timing("document_parsing", time.time() - t0, tenant_id, filename=file.filename, text_length=len(text))
-
-        t1 = time.time()
-        try:
-            chunks = ingestion.chunk_text(text)
-            log_timing("text_chunking", time.time() - t1, tenant_id, filename=file.filename, num_chunks=len(chunks))
-        except MemoryError:
-            logger.exception("Out of memory while chunking text; falling back to single-chunk")
-            chunks = [text]
-        except Exception:
-            logger.exception("Unexpected error while chunking text; falling back to single-chunk")
-            chunks = [text]
-
-        t2 = time.time()
-        logger.info("Indexing chunks for %s...", saved_path)
-        try:
-            num = await index_files(tenant_id, chunks, os.path.basename(saved_path))
-            log_timing("indexing_total", time.time() - t2, tenant_id, filename=file.filename, num_chunks=num)
-            total_chunks += num
-            
-            # Update DB record to indexed
-            if db:
-                try:
-                    doc_record.status = "indexed"
-                    db.commit()
-                except Exception as e:
-                    logger.warning("Could not update DB record: %s", e)
-        except Exception as e:
-            logger.exception("Indexing failed for %s: %s", file.filename, e)
-            if db:
-                try:
-                    doc_record.status = "failed"
-                    doc_record.error_message = str(e)
-                    db.commit()
-                except:
-                    pass
-            raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
-        total_chunks += num
+                raise HTTPException(status_code=500, detail=f"Failed to create document record: {str(e)}")
         
-        log_timing("file_complete", time.time() - file_start, tenant_id, filename=file.filename)
+        log_timing("file_upload_complete", time.time() - file_start, tenant_id, filename=file.filename)
 
-    log_timing("upload_complete", time.time() - overall_start, tenant_id, files_count=len(files), total_chunks=total_chunks)
-    return {"status": "ok", "indexed_chunks": total_chunks}
+    log_timing("upload_complete", time.time() - overall_start, tenant_id, files_count=len(files))
+    return {
+        "status": "ok", 
+        "message": f"{len(uploaded_docs)} file(s) uploaded. Processing in background.",
+        "documents": uploaded_docs
+    }
 
 
 @app.post("/api/query")
@@ -609,6 +641,7 @@ async def list_documents(
                     "filename": doc.filename,
                     "status": doc.status,
                     "created_at": doc.created_at.isoformat(),
+                    "updated_at": doc.updated_at.isoformat(),
                     "error_message": doc.error_message
                 }
                 for doc in docs
@@ -617,3 +650,70 @@ async def list_documents(
     except Exception as e:
         logger.warning("Failed to list documents: %s", e)
         return {"documents": [], "message": "Database error"}
+
+
+@app.get("/api/documents/{doc_id}/status")
+async def get_document_status(
+    doc_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Protected endpoint: get status of a specific document."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    doc = db.query(Document).filter(
+        Document.id == doc_id,
+        Document.tenant_id == tenant_id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    return doc.to_dict()
+
+
+@app.post("/api/documents/{doc_id}/reindex")
+async def reindex_document(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Protected endpoint: reindex a specific document."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    tenant_id = current_user["tenant_id"]
+    
+    doc = db.query(Document).filter(
+        Document.id == doc_id,
+        Document.tenant_id == tenant_id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Update status to pending
+    doc.status = "pending"
+    doc.error_message = None
+    db.commit()
+    
+    # Schedule background reindexing
+    background_tasks.add_task(
+        process_document_background,
+        doc.id,
+        tenant_id,
+        doc.file_path,
+        doc.filename
+    )
+    
+    logger.info(f"Scheduled reindexing for document {doc_id}: {doc.filename}")
+    
+    return {
+        "status": "ok",
+        "message": f"Reindexing started for {doc.filename}",
+        "document": doc.to_dict()
+    }

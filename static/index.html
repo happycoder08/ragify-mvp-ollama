@@ -100,6 +100,62 @@
             align-items: center;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
+        .document-name {
+            font-weight: 500;
+            color: #1f2937;
+        }
+        .document-date {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-pending {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        .status-indexing {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        .status-indexed {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        .status-failed {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .document-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .reindex-btn {
+            padding: 4px 12px;
+            background: #f3f4f6;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            color: #374151;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .reindex-btn:hover {
+            background: #e5e7eb;
+        }
+        .reindex-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
         .doc-info {
             flex: 1;
         }
@@ -380,6 +436,8 @@
         }
 
         // Load documents
+        let autoRefreshInterval = null;
+        
         async function loadDocuments() {
             try {
                 const response = await fetchWithAuth('/api/documents');
@@ -389,17 +447,48 @@
                     
                     if (data.documents.length === 0) {
                         list.innerHTML = '<div class="empty-state">No documents yet. Upload your first document below!</div>';
+                        // Stop auto-refresh if no documents
+                        if (autoRefreshInterval) {
+                            clearInterval(autoRefreshInterval);
+                            autoRefreshInterval = null;
+                        }
                     } else {
-                        list.innerHTML = data.documents.map(doc => `
-                            <div class="document-item">
-                                <div class="doc-info">
-                                    <div class="doc-name">${doc.filename}</div>
-                                    <div class="doc-meta">Uploaded: ${new Date(doc.created_at).toLocaleString()}</div>
-                                    ${doc.error_message ? `<div class="doc-meta" style="color: #dc2626;">${doc.error_message}</div>` : ''}
+                        // Check if any documents are pending or indexing
+                        const hasProcessing = data.documents.some(doc => 
+                            doc.status === 'pending' || doc.status === 'indexing'
+                        );
+                        
+                        // Start/stop auto-refresh based on processing status
+                        if (hasProcessing && !autoRefreshInterval) {
+                            autoRefreshInterval = setInterval(loadDocuments, 3000); // Refresh every 3s
+                            console.log('Auto-refresh enabled (documents processing)');
+                        } else if (!hasProcessing && autoRefreshInterval) {
+                            clearInterval(autoRefreshInterval);
+                            autoRefreshInterval = null;
+                            console.log('Auto-refresh disabled (all documents ready)');
+                        }
+                        
+                        list.innerHTML = data.documents.map(doc => {
+                            const statusText = doc.status.charAt(0).toUpperCase() + doc.status.slice(1);
+                            const reindexBtn = (doc.status === 'failed' || doc.status === 'indexed') 
+                                ? `<button class="reindex-btn" onclick="reindexDocument(${doc.id}, '${doc.filename}')">🔄 Reindex</button>` 
+                                : '';
+                            
+                            return `
+                                <div class="document-item">
+                                    <div class="doc-info">
+                                        <div class="doc-name">${doc.filename}</div>
+                                        <div class="doc-meta">Uploaded: ${new Date(doc.created_at).toLocaleString()}</div>
+                                        <div class="doc-meta">Updated: ${new Date(doc.updated_at).toLocaleString()}</div>
+                                        ${doc.error_message ? `<div class="doc-meta" style="color: #dc2626;">Error: ${doc.error_message}</div>` : ''}
+                                    </div>
+                                    <div class="document-actions">
+                                        <span class="status-badge status-${doc.status}">${statusText}</span>
+                                        ${reindexBtn}
+                                    </div>
                                 </div>
-                                <span class="status-badge status-${doc.status}">${doc.status}</span>
-                            </div>
-                        `).join('');
+                            `;
+                        }).join('');
                     }
                 }
             } catch (error) {
@@ -460,10 +549,11 @@
                 });
 
                 if (response.ok) {
-                    alert('Files uploaded successfully!');
+                    const result = await response.json();
+                    alert(result.message || 'Files uploaded successfully!');
                     fileInput.value = '';
                     uploadBtn.textContent = 'Upload Selected Files';
-                    loadDocuments();
+                    loadDocuments(); // Immediate refresh to show pending status
                 } else {
                     const error = await response.json();
                     alert('Upload failed: ' + (error.detail || 'Unknown error'));
@@ -472,6 +562,29 @@
                 alert('Upload failed: ' + error.message);
             } finally {
                 uploadBtn.disabled = false;
+            }
+        }
+        
+        async function reindexDocument(docId, filename) {
+            if (!confirm(`Reindex ${filename}?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetchWithAuth(`/api/documents/${docId}/reindex`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(result.message || 'Reindexing started');
+                    loadDocuments(); // Immediate refresh
+                } else {
+                    const error = await response.json();
+                    alert('Reindex failed: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Reindex failed: ' + error.message);
             }
         }
 
@@ -591,7 +704,7 @@
         // Initialize
         loadTenantConfig();
         loadDocuments();
-        setInterval(loadDocuments, 5000); // Refresh every 5 seconds
+        // Auto-refresh is handled dynamically by loadDocuments() based on document status
     </script>
 </body>
 </html>

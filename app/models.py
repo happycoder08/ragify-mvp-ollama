@@ -29,8 +29,8 @@ class Document(Base):
     filename = Column(String(500), nullable=False)
     file_path = Column(String(1000), nullable=False)
     
-    # Status: "indexing", "indexed", "failed"
-    status = Column(String(50), nullable=False, default="indexing", index=True)
+    # Status: "pending" (uploaded, waiting to index), "indexing" (being processed), "indexed" (ready), "failed" (error)
+    status = Column(String(50), nullable=False, default="pending", index=True)
     
     # Optional error message if status is "failed"
     error_message = Column(Text, nullable=True)
