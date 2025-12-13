@@ -78,7 +78,7 @@ class ModeConfig:
         # Reranker Settings - better filtering after retrieval
         "reranker_provider": "none",  # none, jina, cohere
         "reranker_top_n": 4,  # Keep top 4 best chunks after scoring/filtering
-        "enable_reranking": False,  # Disable for speed in demo
+        "enable_reranking": False,  # False = free lexical+semantic hybrid reranking
         
         # Context Budget
         "context_budget_chars": 12000,  # Cap context at 12k chars (~3k tokens)

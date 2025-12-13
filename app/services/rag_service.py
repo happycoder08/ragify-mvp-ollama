@@ -47,6 +47,67 @@ def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
     }
     logger.info(json.dumps(log_data))
 
+
+def _lexical_overlap_score(query: str, doc: str) -> float:
+    """
+    Compute lexical overlap score between query and document.
+    Returns a score between 0 and 1 based on token intersection.
+    
+    Args:
+        query: User's question
+        doc: Document chunk text
+        
+    Returns:
+        Score from 0 (no overlap) to 1 (complete overlap)
+    """
+    # Simple tokenization: lowercase, split on whitespace and punctuation
+    def tokenize(text: str) -> set:
+        # Remove punctuation and convert to lowercase
+        cleaned = ''.join(c.lower() if c.isalnum() or c.isspace() else ' ' for c in text)
+        # Split and filter empty strings
+        tokens = set(t for t in cleaned.split() if len(t) > 2)  # Ignore 1-2 char tokens
+        return tokens
+    
+    query_tokens = tokenize(query)
+    doc_tokens = tokenize(doc)
+    
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    
+    # Jaccard similarity: intersection / union
+    intersection = len(query_tokens & doc_tokens)
+    union = len(query_tokens | doc_tokens)
+    
+    return intersection / union if union > 0 else 0.0
+
+
+def _hybrid_rerank_score(query: str, doc: str, vector_distance: float) -> float:
+    """
+    Combine lexical overlap and vector distance for hybrid scoring.
+    
+    Args:
+        query: User's question
+        doc: Document chunk text
+        vector_distance: ChromaDB distance (lower = better)
+        
+    Returns:
+        Combined score (higher = better)
+    """
+    # Lexical score (0-1, higher is better)
+    lexical_score = _lexical_overlap_score(query, doc)
+    
+    # Normalize vector distance to 0-1 range (invert so higher is better)
+    # Typical distances: 0-500, with good matches < 400
+    # Normalize and invert: 1 - (dist / 500)
+    normalized_distance = min(vector_distance / 500.0, 1.0)
+    vector_score = 1.0 - normalized_distance
+    
+    # Combine scores: 60% semantic (vector), 40% lexical
+    combined_score = 0.6 * vector_score + 0.4 * lexical_score
+    
+    return combined_score
+
+
 # Multi-tenant support: maintain separate collections per tenant
 _tenant_collections: Dict[str, Any] = {}
 
@@ -310,16 +371,46 @@ async def query_collection(
 
     # Sort by distance (best first) and limit to best chunks
     # In demo mode: retrieve 15-20, filter by threshold, then take best 4-6
-    filtered_results = sorted(filtered_results, key=lambda x: x[2])  # Sort by distance (lower = better)
+    # Apply free lexical reranking if external reranker is disabled
+    if not ENABLE_RERANKING and len(filtered_results) > 1:
+        t_rerank = time.time()
+        logger.info("Applying free lexical+semantic hybrid reranking")
+        
+        # Compute hybrid scores for all filtered results
+        scored_results = []
+        for doc, meta, dist in filtered_results:
+            hybrid_score = _hybrid_rerank_score(question, doc, dist)
+            scored_results.append((doc, meta, dist, hybrid_score))
+        
+        # Sort by hybrid score (higher is better)
+        scored_results.sort(key=lambda x: x[3], reverse=True)
+        
+        # Extract scores for logging
+        hybrid_scores = [score for _, _, _, score in scored_results]
+        
+        rerank_duration = time.time() - t_rerank
+        log_timing_rag("lexical_reranking", rerank_duration, tenant_id,
+                      before=len(filtered_results), after=len(scored_results),
+                      rerank_ms=round(rerank_duration * 1000, 2),
+                      hybrid_scores=[round(s, 4) for s in hybrid_scores[:10]])  # Log top 10 scores
+        
+        logger.info("After lexical reranking: %d chunks, top scores: %s", 
+                   len(scored_results), [round(s, 4) for s in hybrid_scores[:5]])
+        
+        # Update filtered_results with reranked order (drop hybrid score)
+        filtered_results = [(doc, meta, dist) for doc, meta, dist, _ in scored_results]
+    else:
+        # Just sort by distance if not reranking
+        filtered_results = sorted(filtered_results, key=lambda x: x[2])  # Sort by distance (lower = better)
     
-    # Limit to best N chunks after sorting
+    # Limit to best N chunks after sorting/reranking
     max_chunks = RERANKER_TOP_N if RERANKER_TOP_N else min(6, len(filtered_results))
     if len(filtered_results) > max_chunks:
-        logger.info("Limiting from %d to top %d best chunks after distance-based scoring", 
+        logger.info("Limiting from %d to top %d best chunks after scoring", 
                    len(filtered_results), max_chunks)
         filtered_results = filtered_results[:max_chunks]
 
-    # Rerank filtered results if enabled
+    # External reranking (Jina, Cohere, etc.) if enabled
     if ENABLE_RERANKING and len(filtered_results) > 1:
         t_rerank = time.time()
         
