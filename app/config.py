@@ -40,6 +40,11 @@ class ModeConfig:
         "llm_model": "llama3.2:1b",
         "embedding_model": "nomic-embed-text",
         
+        # Reranker Settings
+        "reranker_provider": "none",  # none, jina, cohere
+        "reranker_top_n": None,  # None = use all retrieved docs
+        "enable_reranking": False,  # Disable in dev for speed
+        
         # Logging
         "log_level": "DEBUG",
         "enable_timing_logs": True,
@@ -67,6 +72,11 @@ class ModeConfig:
         "llm_model": "llama3.2:1b",
         "embedding_model": "nomic-embed-text",
         
+        # Reranker Settings
+        "reranker_provider": "none",  # none, jina, cohere
+        "reranker_top_n": 2,  # Keep top 2 after reranking
+        "enable_reranking": False,  # Disable for speed in demo
+        
         # Logging
         "log_level": "INFO",
         "enable_timing_logs": True,
@@ -93,6 +103,11 @@ class ModeConfig:
         "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
         "llm_model": os.getenv("LLM_MODEL", "llama3.2:1b"),
         "embedding_model": "nomic-embed-text",
+        
+        # Reranker Settings
+        "reranker_provider": os.getenv("RERANKER_PROVIDER", "none"),
+        "reranker_top_n": 3,  # Keep top 3 after reranking
+        "enable_reranking": True,  # Enable for better accuracy in prod
         
         # Logging
         "log_level": "INFO",
@@ -131,6 +146,9 @@ EMBEDDING_BATCH_SIZE = CONFIG["embedding_batch_size"]
 LLM_PROVIDER = CONFIG["llm_provider"]
 LLM_MODEL = CONFIG["llm_model"]
 EMBEDDING_MODEL = CONFIG["embedding_model"]
+RERANKER_PROVIDER = CONFIG["reranker_provider"]
+RERANKER_TOP_N = CONFIG["reranker_top_n"]
+ENABLE_RERANKING = CONFIG["enable_reranking"]
 LOG_LEVEL = CONFIG["log_level"]
 ENABLE_TIMING_LOGS = CONFIG["enable_timing_logs"]
 
@@ -162,5 +180,8 @@ def get_config_summary() -> Dict[str, Any]:
         "request_timeout": REQUEST_TIMEOUT,
         "llm_provider": LLM_PROVIDER,
         "llm_model": LLM_MODEL,
+        "reranker_provider": RERANKER_PROVIDER,
+        "reranker_top_n": RERANKER_TOP_N,
+        "enable_reranking": ENABLE_RERANKING,
         "log_level": LOG_LEVEL,
     }

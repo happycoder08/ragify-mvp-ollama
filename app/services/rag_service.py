@@ -7,6 +7,7 @@ import httpx
 
 from . import clients
 from .llm_providers import create_llm_provider, LLMProvider
+from .reranker_providers import create_reranker_provider, RerankerProvider
 from app.config import (
     REQUEST_TIMEOUT,
     SIMILARITY_THRESHOLD,
@@ -18,6 +19,8 @@ from app.config import (
     TOP_K_FULL,
     EMBEDDING_MODEL,
     ENABLE_TIMING_LOGS,
+    ENABLE_RERANKING,
+    RERANKER_TOP_N,
 )
 
 OLLAMA_BASE_URL = "http://localhost:11434"
@@ -26,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 # Global LLM provider instance (initialized on first use)
 _llm_provider: LLMProvider = None
+
+# Global reranker provider instance (initialized on first use)
+_reranker_provider: RerankerProvider = None
 
 def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
     """Log timing events with structured JSON (RAG service)."""
@@ -57,6 +63,14 @@ def _get_llm_provider() -> LLMProvider:
         http_client = clients.get_http_client()
         _llm_provider = create_llm_provider(http_client=http_client)
     return _llm_provider
+
+
+def _get_reranker_provider() -> RerankerProvider:
+    """Get or create the global reranker provider instance."""
+    global _reranker_provider
+    if _reranker_provider is None:
+        _reranker_provider = create_reranker_provider()
+    return _reranker_provider
 
 
 def _get_collection(tenant_id: str = "default"):
@@ -258,6 +272,52 @@ async def query_collection(tenant_id: str, question: str, top_k: int = 4, mode: 
         async def not_relevant_gen():
             yield "I could not find anything relevant in the indexed documents to answer that question."
         return not_relevant_gen(), []
+
+    # Rerank filtered results if enabled
+    if ENABLE_RERANKING and len(filtered_results) > 1:
+        t_rerank = time.time()
+        
+        # Extract documents and metadata from filtered results
+        rerank_docs = [doc for doc, meta, dist in filtered_results]
+        rerank_metas = [meta for doc, meta, dist in filtered_results]
+        rerank_dists = [dist for doc, meta, dist in filtered_results]
+        
+        # Get reranker and rerank
+        reranker = _get_reranker_provider()
+        top_n = RERANKER_TOP_N if RERANKER_TOP_N is not None else len(rerank_docs)
+        
+        try:
+            indices, scores = reranker.rerank(
+                query=question,
+                documents=rerank_docs,
+                top_n=top_n,
+                metadata=rerank_metas
+            )
+            
+            # Reorder filtered_results based on reranker indices
+            reranked_results = [
+                (rerank_docs[i], rerank_metas[i], rerank_dists[i], scores[idx])
+                for idx, i in enumerate(indices)
+            ]
+            
+            rerank_duration = time.time() - t_rerank
+            reranked_doc_ids = [meta.get("source_file", "unknown") for _, meta, _, _ in reranked_results]
+            
+            log_timing_rag("reranking", rerank_duration, tenant_id,
+                          before=len(filtered_results), after=len(reranked_results),
+                          rerank_ms=round(rerank_duration * 1000, 2),
+                          reranked_doc_ids=reranked_doc_ids,
+                          rerank_scores=[round(s, 4) for s in scores])
+            
+            logger.info("After reranking: %d chunks (top_n=%s), scores: %s", 
+                       len(reranked_results), top_n, [round(s, 4) for s in scores])
+            
+            # Use reranked results (now with 4-tuple including rerank score)
+            filtered_results = [(doc, meta, dist) for doc, meta, dist, _ in reranked_results]
+            
+        except Exception as e:
+            logger.exception(f"Reranking failed: {e}. Using original order.")
+            # Continue with filtered_results as-is
 
     context_pieces: List[str] = []
     sources: List[str] = []
