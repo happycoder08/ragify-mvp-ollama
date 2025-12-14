@@ -223,6 +223,10 @@
             font-weight: 600;
             transition: all 0.3s;
             margin-top: 10px;
+            display: block;
+            width: auto;
+            margin-left: auto;
+            margin-right: auto;
         }
         .upload-btn:hover {
             transform: translateY(-2px);
@@ -512,8 +516,11 @@
 
         fileInput.addEventListener('change', () => {
             const files = fileInput.files;
+            console.log(`Files selected: ${files.length}`);
             if (files.length > 0) {
-                document.getElementById('uploadBtn').textContent = `Upload ${files.length} File(s)`;
+                const btnText = `Upload ${files.length} File(s)`;
+                document.getElementById('uploadBtn').textContent = btnText;
+                console.log(`Button text updated to: ${btnText}`);
             }
         });
 
