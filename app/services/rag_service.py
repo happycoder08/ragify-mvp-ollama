@@ -324,10 +324,15 @@ async def query_collection(
 
     t_retrieval = time.time()
     # Build metadata filter if doc_ids provided
+    # ChromaDB doesn't support $in operator, so we need to use $or with multiple $eq
     where_filter = None
     if doc_ids:
-        # Filter to only chunks from specified documents
-        where_filter = {"doc_id": {"$in": doc_ids}}
+        if len(doc_ids) == 1:
+            # Single doc_id: use simple $eq
+            where_filter = {"doc_id": {"$eq": doc_ids[0]}}
+        else:
+            # Multiple doc_ids: use $or with multiple $eq conditions
+            where_filter = {"$or": [{"doc_id": {"$eq": doc_id}} for doc_id in doc_ids]}
         logger.info("Applying doc_ids filter: %s", where_filter)
     
     results = collection.query(
@@ -355,10 +360,18 @@ async def query_collection(
     # Lower distance = higher similarity. For squared euclidean, typical relevant results are < 500
     # Very relevant: 0-200, Moderately relevant: 200-350, Irrelevant: > 350
     # Threshold configured in config.py based on RAGIFY_MODE
-    filtered_results = [
-        (doc, meta, dist) for doc, meta, dist in zip(docs, metas, distances)
-        if dist < SIMILARITY_THRESHOLD
-    ]
+    # NOTE: When doc_ids are specified (document-scoped search), skip threshold filtering
+    # to allow hybrid reranking to pick the best matches
+    if doc_ids:
+        # Document-scoped query: use all retrieved chunks, let hybrid reranking filter
+        filtered_results = [(doc, meta, dist) for doc, meta, dist in zip(docs, metas, distances)]
+        logger.info("Document-scoped query: using all %d retrieved chunks, threshold filter skipped", len(filtered_results))
+    else:
+        # Global query: apply similarity threshold
+        filtered_results = [
+            (doc, meta, dist) for doc, meta, dist in zip(docs, metas, distances)
+            if dist < SIMILARITY_THRESHOLD
+        ]
 
     log_timing_rag("similarity_filtering", time.time() - t_filter, tenant_id, 
                    before=len(docs), after=len(filtered_results), threshold=SIMILARITY_THRESHOLD)

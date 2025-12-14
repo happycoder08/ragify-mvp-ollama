@@ -62,7 +62,7 @@ class ModeConfig:
         "top_k_full": 20,  # Retrieve more, then filter (was 4)
         
         # Retrieval Settings - more lenient for better recall
-        "similarity_threshold": 400,  # Higher = more lenient (was 350, too strict)
+        "similarity_threshold": 400,  # Skipped for document-scoped queries, hybrid reranking used instead
         "chunk_size": 800,
         "chunk_overlap": 200,
         

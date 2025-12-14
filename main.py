@@ -470,20 +470,25 @@ async def upload(
                 logger.info("Created DB record for %s (id=%d)", file.filename, doc_record.id)
                 uploaded_docs.append(doc_record.to_dict())
                 
-                # Schedule background processing
-                background_tasks.add_task(
-                    process_document_background,
-                    doc_record.id,
-                    tenant_id,
-                    saved_path,
-                    file.filename
-                )
-                logger.info(f"Scheduled background processing for document {doc_record.id}")
-                
             except Exception as e:
                 logger.exception("Could not create DB record: %s", e)
-                db.rollback()
-                raise HTTPException(status_code=500, detail=f"Failed to create document record: {str(e)}")
+                if db:
+                    db.rollback()
+                # Continue without DB record - still process the document
+                logger.warning("Continuing without DB record for %s", file.filename)
+        else:
+            logger.info("No DB available, processing %s without database record", file.filename)
+        
+        # Schedule background processing regardless of DB status
+        doc_id = doc_record.id if doc_record else -1  # Use -1 to indicate no DB record
+        background_tasks.add_task(
+            process_document_background,
+            doc_id,
+            tenant_id,
+            saved_path,
+            file.filename
+        )
+        logger.info(f"Scheduled background processing for {file.filename} (doc_id={doc_id})")
         
         log_timing("file_upload_complete", time.time() - file_start, tenant_id, filename=file.filename)
 
