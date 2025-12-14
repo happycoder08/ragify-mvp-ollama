@@ -13,7 +13,7 @@ print("RAGify End-to-End Test")
 print("="*60 + "\n")
 
 # 1. Check health
-print("[1/4] Checking API health...")
+print("[1/5] Checking API health...")
 try:
     resp = requests.get(f"{BASE_URL}/health", timeout=5)
     print(f"Status: {resp.status_code}")
@@ -22,8 +22,26 @@ except Exception as e:
     print(f"ERROR: {e}\n")
     exit(1)
 
+# 1.5 Login to get token
+print("[2/5] Logging in...")
+try:
+    login_data = {"username": "testuser", "password": "testpass"}
+    resp = requests.post(f"{BASE_URL}/api/login", json=login_data, timeout=5)
+    print(f"Status: {resp.status_code}")
+    if resp.status_code == 200:
+        auth_response = resp.json()
+        token = auth_response.get("access_token")
+        print(f"Token: {token[:20]}...\n")
+        headers = {"Authorization": f"Bearer {token}"}
+    else:
+        print(f"ERROR: {resp.text}\n")
+        exit(1)
+except Exception as e:
+    print(f"ERROR: {e}\n")
+    exit(1)
+
 # 2. Create a test document
-print("[2/4] Creating test document...")
+print("[3/5] Creating test document...")
 test_file = TEST_DIR / "test_document.txt"
 test_content = """
 Les Schwab Tire Centers
@@ -37,11 +55,11 @@ test_file.write_text(test_content)
 print(f"Created: {test_file}\n")
 
 # 3. Upload document
-print("[3/4] Uploading document...")
+print("[4/5] Uploading document...")
 try:
     with open(test_file, 'rb') as f:
-        files = {'file': f}
-        resp = requests.post(f"{BASE_URL}/api/upload", files=files, timeout=30)
+        files = {'files': f}
+        resp = requests.post(f"{BASE_URL}/api/upload", files=files, headers=headers, timeout=30)
     print(f"Status: {resp.status_code}")
     if resp.status_code == 200:
         result = resp.json()
@@ -58,13 +76,13 @@ except Exception as e:
 time.sleep(2)
 
 # 4. Query document
-print("[4/4] Querying document...")
+print("[5/5] Querying document...")
 query_data = {
     "query": "What is Les Schwab and what do they do?",
     "top_k": 3
 }
 try:
-    resp = requests.post(f"{BASE_URL}/api/query", json=query_data, timeout=30)
+    resp = requests.post(f"{BASE_URL}/api/query", json=query_data, headers=headers, timeout=30)
     print(f"Status: {resp.status_code}")
     
     if resp.status_code == 200:
