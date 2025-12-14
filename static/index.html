@@ -562,7 +562,9 @@
         }
 
         async function uploadFiles() {
+            console.log('uploadFiles() called');
             const files = fileInput.files;
+            console.log(`uploadFiles: files.length = ${files.length}`);
             if (files.length === 0) {
                 alert('Please select files to upload');
                 return;
@@ -571,33 +573,42 @@
             const formData = new FormData();
             for (let file of files) {
                 formData.append('files', file);
+                console.log(`Added file to FormData: ${file.name}`);
             }
             
+            console.log('Calling uploadFormData()');
             await uploadFormData(formData);
         }
 
         async function uploadFormData(formData) {
+            console.log('uploadFormData() called');
             const uploadBtn = document.getElementById('uploadBtn');
             uploadBtn.disabled = true;
             uploadBtn.textContent = 'Uploading...';
 
             try {
+                console.log('Sending upload request to /api/upload');
                 const response = await fetchWithAuth('/api/upload', {
                     method: 'POST',
                     body: formData
                 });
+                console.log(`Upload response status: ${response.status}`);
 
                 if (response.ok) {
+                    console.log('Upload successful');
                     const result = await response.json();
+                    console.log('Upload result:', result);
                     alert(result.message || 'Files uploaded successfully!');
                     fileInput.value = '';
                     uploadBtn.textContent = 'Upload Selected Files';
                     loadDocuments(); // Immediate refresh to show pending status
                 } else {
+                    console.log('Upload failed with status:', response.status);
                     const error = await response.json();
                     alert('Upload failed: ' + (error.detail || 'Unknown error'));
                 }
             } catch (error) {
+                console.error('Upload exception:', error);
                 alert('Upload failed: ' + error.message);
             } finally {
                 uploadBtn.disabled = false;
