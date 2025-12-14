@@ -25,7 +25,7 @@ except Exception as e:
 # 1.5 Login to get token
 print("[2/5] Logging in...")
 try:
-    login_data = {"username": "testuser", "password": "testpass"}
+    login_data = {"username": "demo", "password": "demo123"}
     resp = requests.post(f"{BASE_URL}/api/login", json=login_data, timeout=5)
     print(f"Status: {resp.status_code}")
     if resp.status_code == 200:

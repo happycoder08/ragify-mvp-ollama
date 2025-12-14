@@ -642,15 +642,14 @@ async def list_documents(
     db: Session = Depends(get_db)
 ):
     """Protected endpoint: list all documents for the authenticated user's tenant."""
-    # Check if database is available
-    if db is None:
-        return {"documents": [], "message": "Database not available"}
-    
     tenant_id = current_user["tenant_id"]
-    try:
-        docs = db.query(Document).filter(Document.tenant_id == tenant_id).order_by(Document.created_at.desc()).all()
-        return {
-            "documents": [
+    documents = []
+    
+    # Try to get documents from database first
+    if db:
+        try:
+            db_docs = db.query(Document).filter(Document.tenant_id == tenant_id).order_by(Document.created_at.desc()).all()
+            documents.extend([
                 {
                     "id": doc.id,
                     "filename": doc.filename,
@@ -659,12 +658,28 @@ async def list_documents(
                     "updated_at": doc.updated_at.isoformat(),
                     "error_message": doc.error_message
                 }
-                for doc in docs
-            ]
-        }
+                for doc in db_docs
+            ])
+        except Exception as e:
+            logger.warning("Failed to list documents from DB: %s", e)
+    
+    # Also get documents from ChromaDB (for documents without DB records)
+    try:
+        from app.services.rag_service import rag_service
+        chroma_docs = rag_service.get_indexed_documents(tenant_id)
+        
+        # Add ChromaDB documents that aren't already in the list
+        db_filenames = {doc["filename"] for doc in documents}
+        for chroma_doc in chroma_docs:
+            if chroma_doc["filename"] not in db_filenames:
+                documents.append(chroma_doc)
     except Exception as e:
-        logger.warning("Failed to list documents: %s", e)
-        return {"documents": [], "message": "Database error"}
+        logger.debug("Failed to get documents from ChromaDB: %s", e)
+    
+    # Sort by creation time (newest first)
+    documents.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    
+    return {"documents": documents}
 
 
 @app.get("/api/documents/{doc_id}/status")

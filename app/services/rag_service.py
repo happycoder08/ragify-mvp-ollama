@@ -218,7 +218,53 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     return embeddings
 
 
-async def add_documents(tenant_id: str, chunks: List[str], source_filename: str, doc_id: int = None) -> int:
+def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
+    """
+    Get list of unique documents indexed in ChromaDB for a tenant.
+    Returns list of documents with metadata.
+    
+    Args:
+        tenant_id: Tenant identifier
+    
+    Returns:
+        List of document metadata dicts with filename, created_at, status
+    """
+    if is_mock_mode():
+        logger.info("MOCK_MODE: returning empty document list for tenant=%s", tenant_id)
+        return []
+    
+    try:
+        collection = _get_collection(tenant_id)
+        
+        # Get all documents from the collection
+        all_items = collection.get()
+        
+        if not all_items or not all_items.get("metadatas"):
+            return []
+        
+        # Extract unique filenames with their metadata
+        seen_files = {}
+        for metadata in all_items["metadatas"]:
+            filename = metadata.get("filename", "unknown")
+            if filename not in seen_files:
+                # Create document entry from metadata
+                seen_files[filename] = {
+                    "id": metadata.get("doc_id", -1),
+                    "filename": filename,
+                    "status": "indexed",  # All docs in ChromaDB are indexed
+                    "created_at": metadata.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
+                    "updated_at": metadata.get("updated_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
+                    "error_message": None
+                }
+        
+        return list(seen_files.values())
+        
+    except Exception as e:
+        logger.warning("Failed to get indexed documents from ChromaDB: %s", e)
+        return []
+
+
+async def add_documents(tenant_id: str, chunks: List[str], source_filename: str, doc_id: int = -1) -> int:
     """
     Add chunks for a given source file into the tenant-specific Chroma collection.
     Returns number of chunks indexed.
