@@ -245,7 +245,8 @@ def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
         # Extract unique filenames with their metadata
         seen_files = {}
         for metadata in all_items["metadatas"]:
-            filename = metadata.get("filename", "unknown")
+            # Support both old format (source_file) and new format (filename)
+            filename = metadata.get("filename") or metadata.get("source_file", "unknown")
             if filename not in seen_files:
                 # Create document entry from metadata
                 seen_files[filename] = {

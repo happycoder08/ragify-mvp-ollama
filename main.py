@@ -665,7 +665,7 @@ async def list_documents(
     
     # Also get documents from ChromaDB (for documents without DB records)
     try:
-        from app.services.rag_service import rag_service
+        from app.services import rag_service
         chroma_docs = rag_service.get_indexed_documents(tenant_id)
         
         # Add ChromaDB documents that aren't already in the list
