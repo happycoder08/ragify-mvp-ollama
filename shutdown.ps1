@@ -1,7 +1,7 @@
 Write-Host ""
 Write-Host "========== RAGify MVP - Stopping Services ==========" -ForegroundColor Red
 
-Write-Host "[1/3] FastAPI..." -ForegroundColor Cyan
+Write-Host "[1/4] FastAPI..." -ForegroundColor Cyan
 $uvicorn = Get-Process -Name "python" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*uvicorn*" }
 if ($uvicorn) {
     Stop-Process -InputObject $uvicorn -Force
@@ -10,7 +10,7 @@ if ($uvicorn) {
     Write-Host "Not running" -ForegroundColor Yellow
 }
 
-Write-Host "[2/3] Ollama..." -ForegroundColor Cyan
+Write-Host "[2/4] Ollama..." -ForegroundColor Cyan
 $ollama = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
 if ($ollama) {
     Stop-Process -InputObject $ollama -Force
@@ -19,7 +19,7 @@ if ($ollama) {
     Write-Host "Not running" -ForegroundColor Yellow
 }
 
-Write-Host "[3/3] PostgreSQL..." -ForegroundColor Cyan
+Write-Host "[3/4] PostgreSQL..." -ForegroundColor Cyan
 $pg = docker ps --filter "name=ragify-postgres" --format "{{.Names}}" 2>$null
 if ($pg -eq "ragify-postgres") {
     docker stop ragify-postgres 2>$null | Out-Null

@@ -234,9 +234,16 @@ def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
         return []
     
     try:
+        # Check if ChromaDB client is available
+        try:
+            chroma_client = clients.get_chroma_client()
+        except RuntimeError:
+            logger.debug("ChromaDB client not initialized, skipping document retrieval")
+            return []
+        
         collection = _get_collection(tenant_id)
         
-        # Get all documents from the collection
+        # Get all documents from the collection with a timeout
         all_items = collection.get()
         
         if not all_items or not all_items.get("metadatas"):
@@ -261,7 +268,7 @@ def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
         return list(seen_files.values())
         
     except Exception as e:
-        logger.warning("Failed to get indexed documents from ChromaDB: %s", e)
+        logger.warning("Failed to get indexed documents from ChromaDB: %s", e, exc_info=True)
         return []
 
 
