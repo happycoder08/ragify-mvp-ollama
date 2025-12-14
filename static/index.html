@@ -513,42 +513,53 @@
         // File upload
         const fileInput = document.getElementById('fileInput');
         const uploadArea = document.getElementById('uploadArea');
+        
+        console.log('fileInput element:', fileInput);
+        console.log('uploadArea element:', uploadArea);
 
-        fileInput.addEventListener('change', () => {
-            const files = fileInput.files;
-            console.log(`Files selected: ${files.length}`);
-            if (files.length > 0) {
-                const btnText = `Upload ${files.length} File(s)`;
-                document.getElementById('uploadBtn').textContent = btnText;
-                console.log(`Button text updated to: ${btnText}`);
-            }
-        });
-
-        // Drag and drop
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
-
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            // Use DataTransfer for drag-and-drop since fileInput.files is read-only
-            const droppedFiles = e.dataTransfer.files;
-            if (droppedFiles.length > 0) {
-                // Create FormData directly from dropped files
-                const formData = new FormData();
-                for (let file of droppedFiles) {
-                    formData.append('files', file);
+        if (fileInput) {
+            fileInput.addEventListener('change', () => {
+                const files = fileInput.files;
+                console.log(`Files selected: ${files.length}`);
+                if (files.length > 0) {
+                    const btnText = `Upload ${files.length} File(s)`;
+                    document.getElementById('uploadBtn').textContent = btnText;
+                    console.log(`Button text updated to: ${btnText}`);
                 }
-                // Store it temporarily and upload
-                uploadFormData(formData);
-            }
-        });
+            });
+        } else {
+            console.error('fileInput not found!');
+        }
+
+        if (uploadArea) {
+            // Drag and drop
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                // Use DataTransfer for drag-and-drop since fileInput.files is read-only
+                const droppedFiles = e.dataTransfer.files;
+                if (droppedFiles.length > 0) {
+                    // Create FormData directly from dropped files
+                    const formData = new FormData();
+                    for (let file of droppedFiles) {
+                        formData.append('files', file);
+                    }
+                    // Store it temporarily and upload
+                    uploadFormData(formData);
+                }
+            });
+        } else {
+            console.error('uploadArea not found!');
+        }
 
         async function uploadFiles() {
             const files = fileInput.files;
