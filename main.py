@@ -403,6 +403,8 @@ async def upload(
     db: Session = Depends(get_db)
 ):
     """Protected endpoint: upload documents and start background indexing."""
+    logger.info(f"Upload endpoint called with {len(files) if files else 0} files")
+    
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
 
@@ -448,10 +450,11 @@ async def upload(
     
     uploaded_docs = []
     overall_start = time.time()
+    logger.info(f"Processing {len(files)} files for upload")
 
     for file in files:
         file_start = time.time()
-        logger.info("Uploading file %s for tenant %s (request_id=%s)", file.filename, tenant_id, request_id)
+        logger.info(f"Processing file: {file.filename}")
         raw_bytes = await file.read()
         logger.info("Saved %d bytes for %s", len(raw_bytes), file.filename)
         t_save = time.time()
@@ -499,8 +502,10 @@ async def upload(
     log_timing("upload_complete", time.time() - overall_start, tenant_id, files_count=len(files))
     return {
         "status": "ok", 
-        "message": f"{len(uploaded_docs)} file(s) uploaded. Processing in background.",
-        "documents": uploaded_docs
+        "message": f"{len(files)} file(s) uploaded. Processing in background.",
+        "documents": uploaded_docs,
+        "files_processed": len(files),
+        "files_with_db_record": len(uploaded_docs)
     }
 
 
