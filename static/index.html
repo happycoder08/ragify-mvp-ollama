@@ -530,9 +530,16 @@
         uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadArea.classList.remove('dragover');
-            fileInput.files = e.dataTransfer.files;
-            if (fileInput.files.length > 0) {
-                document.getElementById('uploadBtn').textContent = `Upload ${fileInput.files.length} File(s)`;
+            // Use DataTransfer for drag-and-drop since fileInput.files is read-only
+            const droppedFiles = e.dataTransfer.files;
+            if (droppedFiles.length > 0) {
+                // Create FormData directly from dropped files
+                const formData = new FormData();
+                for (let file of droppedFiles) {
+                    formData.append('files', file);
+                }
+                // Store it temporarily and upload
+                uploadFormData(formData);
             }
         });
 
@@ -547,7 +554,11 @@
             for (let file of files) {
                 formData.append('files', file);
             }
+            
+            await uploadFormData(formData);
+        }
 
+        async function uploadFormData(formData) {
             const uploadBtn = document.getElementById('uploadBtn');
             uploadBtn.disabled = true;
             uploadBtn.textContent = 'Uploading...';
@@ -572,7 +583,9 @@
                 alert('Upload failed: ' + error.message);
             } finally {
                 uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Upload Selected Files';
             }
+        }
         }
         
         async function reindexDocument(docId, filename) {
