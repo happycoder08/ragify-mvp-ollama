@@ -111,11 +111,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "mock_mode": is_mock_mode(),
-        "ollama_timeout": REQUEST_TIMEOUT,
-    }
+    try:
+        return {
+            "status": "ok",
+            "mock_mode": is_mock_mode(),
+            "ragify_mode": RAGIFY_MODE,
+        }
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return {"status": "degraded", "error": str(e)}
 
 
 @app.get("/", response_class=HTMLResponse)
