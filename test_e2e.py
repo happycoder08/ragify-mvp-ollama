@@ -78,7 +78,7 @@ time.sleep(2)
 # 4. Query document
 print("[5/5] Querying document...")
 query_data = {
-    "query": "What is Les Schwab and what do they do?",
+    "question": "What is Les Schwab and what do they do?",
     "top_k": 3
 }
 try:

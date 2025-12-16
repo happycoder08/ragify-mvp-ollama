@@ -17,18 +17,21 @@ def demo_startup_check(tenant_id: str = "default"):
     Logs document counts and vector store readiness.
     Fails fast if more than one document is indexed (demo expects single doc).
     
+    In demo mode, gracefully handles Postgres unavailability (not critical for RAG).
+    
     Args:
         tenant_id: Tenant to check
         
     Raises:
-        RuntimeError: If checks fail
+        RuntimeError: If checks fail critically
     """
     logger.info("=" * 70)
     logger.info("DEMO MODE STARTUP CHECKS")
     logger.info("=" * 70)
     
-    # Check Postgres documents
+    # Check Postgres documents (graceful failure in demo mode)
     db = SessionLocal()
+    db_count = 0
     try:
         db_docs = db.query(Document).filter(Document.tenant_id == tenant_id).all()
         db_count = len(db_docs)
@@ -36,8 +39,9 @@ def demo_startup_check(tenant_id: str = "default"):
         for doc in db_docs:
             logger.info(f"  - ID={doc.id}, filename={doc.filename}, status={doc.status}")
     except Exception as e:
-        logger.error(f"✗ Failed to query Postgres: {e}")
-        raise RuntimeError(f"Postgres check failed: {e}")
+        logger.warning(f"⚠ Postgres unavailable (not critical for RAG): {e}")
+        logger.info("  Application will run with ChromaDB only.")
+        db_count = 0
     finally:
         db.close()
     

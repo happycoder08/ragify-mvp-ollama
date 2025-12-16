@@ -1,0 +1,122 @@
+[
+  {
+    "id": 1,
+    "question": "What time should I arrive on my first day?",
+    "expected_answer": "8:00 AM at main reception on 3rd floor",
+    "keywords": ["8:00", "8 am", "reception", "3rd floor", "main reception"],
+    "required_keywords": ["8:00", "8 am"],
+    "category": "first_day_basics"
+  },
+  {
+    "id": 2,
+    "question": "What documents do I need to bring on my first day?",
+    "expected_answer": "Government-issued ID, signed offer letter, completed I-9 form",
+    "keywords": ["id", "offer letter", "i-9", "government", "bring"],
+    "required_keywords": ["id", "offer"],
+    "category": "first_day_basics"
+  },
+  {
+    "id": 3,
+    "question": "How do I set up my email signature?",
+    "expected_answer": "Specific format with name, title, phone, email, website in Arial 10pt",
+    "keywords": ["name", "title", "phone", "email", "website", "arial", "10pt", "10 pt", "signature"],
+    "required_keywords": ["signature", "arial"],
+    "category": "email_setup"
+  },
+  {
+    "id": 4,
+    "question": "How many days can I work remotely in a week?",
+    "expected_answer": "Up to 3 days per week",
+    "keywords": ["3 days", "remote", "week"],
+    "required_keywords": ["3"],
+    "category": "remote_work"
+  },
+  {
+    "id": 5,
+    "question": "What are the core hours I need to be available?",
+    "expected_answer": "10:00 AM - 3:00 PM",
+    "keywords": ["10:00", "10am", "3:00", "3pm", "core hours"],
+    "required_keywords": ["10", "3"],
+    "category": "remote_work"
+  },
+  {
+    "id": 6,
+    "question": "Do I need to have my camera on for meetings?",
+    "expected_answer": "Video on for team meetings, optional for large all-hands",
+    "keywords": ["camera", "video", "team meeting", "all-hands", "optional"],
+    "required_keywords": ["camera", "video"],
+    "category": "remote_work"
+  },
+  {
+    "id": 7,
+    "question": "What should I ask my manager in our first 1:1?",
+    "expected_answer": "Success in first 30 days, key people to connect, best way to reach, team norms, resources",
+    "keywords": ["success", "30 days", "key people", "connect", "team norms", "resources"],
+    "required_keywords": ["success", "30 days"],
+    "category": "manager_meeting"
+  },
+  {
+    "id": 8,
+    "question": "How many vacation days do I get?",
+    "expected_answer": "15 days per year (prorated first year)",
+    "keywords": ["15 days", "vacation", "per year", "prorated"],
+    "required_keywords": ["15"],
+    "category": "benefits_time_off"
+  },
+  {
+    "id": 9,
+    "question": "When does my health insurance start?",
+    "expected_answer": "Coverage starts on your first day",
+    "keywords": ["health insurance", "coverage", "first day", "start"],
+    "required_keywords": ["health insurance", "first day"],
+    "category": "benefits_time_off"
+  },
+  {
+    "id": 10,
+    "question": "What if I need to take a sick day?",
+    "expected_answer": "Notify manager ASAP via Slack/email. No doctor's note needed unless out 3+ days",
+    "keywords": ["notify", "manager", "slack", "email", "doctor's note", "3 days"],
+    "required_keywords": ["notify", "manager"],
+    "category": "benefits_time_off"
+  },
+  {
+    "id": 11,
+    "question": "What's the dress code?",
+    "expected_answer": "Business casual - nice jeans/slacks, collared shirt/blouse",
+    "keywords": ["business casual", "jeans", "slacks", "collared shirt", "dress code"],
+    "required_keywords": ["business casual"],
+    "category": "office_logistics"
+  },
+  {
+    "id": 12,
+    "question": "Can I bring my dog to work?",
+    "expected_answer": "Yes, dog-friendly office. Must be well-behaved and registered with facilities",
+    "keywords": ["dog", "dog-friendly", "well-behaved", "registered", "facilities"],
+    "required_keywords": ["dog"],
+    "category": "office_logistics"
+  },
+  {
+    "id": 13,
+    "question": "How do I get reimbursed for an expense?",
+    "expected_answer": "Use Expensify, upload receipt, categorize, submit for manager approval",
+    "keywords": ["expensify", "receipt", "categorize", "manager approval", "reimbursed"],
+    "required_keywords": ["expensify"],
+    "category": "office_logistics"
+  },
+  {
+    "id": 14,
+    "question": "When should I use email vs Slack?",
+    "expected_answer": "Email: formal communications, external stakeholders, documentation. Slack: quick questions, team updates, informal",
+    "keywords": ["email", "slack", "formal", "external", "documentation", "quick questions"],
+    "required_keywords": ["email", "slack"],
+    "category": "communication"
+  },
+  {
+    "id": 15,
+    "question": "Does the company provide learning budget?",
+    "expected_answer": "$1,500 annual learning budget per employee, plus 1 conference per year",
+    "keywords": ["1500", "$1,500", "learning budget", "conference"],
+    "required_keywords": ["1500"],
+    "category": "professional_development"
+  }
+]

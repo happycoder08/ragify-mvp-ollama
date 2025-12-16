@@ -58,13 +58,15 @@ class ModeConfig:
         "default_mode": "fast",
         "max_tokens_fast": 100,  # Reasonable answers (was 50 "tweet mode")
         "max_tokens_full": 150,
-        "top_k_fast": 15,  # Retrieve more, then filter (was 2)
-        "top_k_full": 20,  # Retrieve more, then filter (was 4)
+        "top_k_fast": 20,  # Retrieve 20 chunks for hybrid reranking
+        "top_k_full": 15,  # Retrieve 15 chunks for full search
+        "top_n_fast": 5,   # Use top 5 chunks for LLM context after hybrid rerank
+        "top_n_full": 8,
         
         # Retrieval Settings - more lenient for better recall
         "similarity_threshold": 400,  # Skipped for document-scoped queries, hybrid reranking used instead
-        "chunk_size": 800,
-        "chunk_overlap": 200,
+        "chunk_size": 300,  # Smaller chunks = more focused content (was 800)
+        "chunk_overlap": 50,  # Smaller overlap for smaller chunks (was 200)
         
         # Performance Settings - fast responses
         "request_timeout": 300,  # 5 min max
@@ -77,7 +79,7 @@ class ModeConfig:
         
         # Reranker Settings - better filtering after retrieval
         "reranker_provider": "none",  # none, jina, cohere
-        "reranker_top_n": 4,  # Keep top 4 best chunks after scoring/filtering
+        "reranker_top_n": 8,  # Keep top 8 chunks for LLM context (retain location+time together)
         "enable_reranking": False,  # False = free lexical+semantic hybrid reranking
         
         # Context Budget
@@ -150,6 +152,8 @@ MAX_TOKENS_FAST = CONFIG["max_tokens_fast"]
 MAX_TOKENS_FULL = CONFIG["max_tokens_full"]
 TOP_K_FAST = CONFIG["top_k_fast"]
 TOP_K_FULL = CONFIG["top_k_full"]
+TOP_N_FAST = CONFIG.get("top_n_fast", None)
+TOP_N_FULL = CONFIG.get("top_n_full", None)
 SIMILARITY_THRESHOLD = CONFIG["similarity_threshold"]
 CHUNK_SIZE = CONFIG["chunk_size"]
 CHUNK_OVERLAP = CONFIG["chunk_overlap"]
@@ -190,6 +194,8 @@ def get_config_summary() -> Dict[str, Any]:
         "max_tokens_full": MAX_TOKENS_FULL,
         "top_k_fast": TOP_K_FAST,
         "top_k_full": TOP_K_FULL,
+        "top_n_fast": TOP_N_FAST,
+        "top_n_full": TOP_N_FULL,
         "similarity_threshold": SIMILARITY_THRESHOLD,
         "request_timeout": REQUEST_TIMEOUT,
         "llm_provider": LLM_PROVIDER,
@@ -197,5 +203,6 @@ def get_config_summary() -> Dict[str, Any]:
         "reranker_provider": RERANKER_PROVIDER,
         "reranker_top_n": RERANKER_TOP_N,
         "enable_reranking": ENABLE_RERANKING,
+        "context_budget_chars": CONTEXT_BUDGET_CHARS,
         "log_level": LOG_LEVEL,
     }

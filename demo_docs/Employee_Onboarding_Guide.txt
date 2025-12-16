@@ -1,0 +1,317 @@
+EMPLOYEE ONBOARDING GUIDE
+Company: TechCorp Solutions
+Last Updated: December 2025
+
+========================================
+WELCOME TO TECHCORP!
+========================================
+
+Congratulations on joining our team! This guide will walk you through your first day, first week, and first month at TechCorp Solutions.
+
+========================================
+FIRST DAY CHECKLIST
+========================================
+
+MORNING (8:00 AM - 12:00 PM)
+----------------------------
+
+1. ARRIVE AT THE OFFICE (8:00 AM)
+   - Report to the main reception on the 3rd floor
+   - Bring: Government-issued ID, signed offer letter, completed I-9 form
+   - You will receive: Employee badge, building access card, parking pass
+
+2. HR ORIENTATION (8:30 AM - 10:00 AM)
+   - Location: Conference Room B
+   - Meet with HR representative Sarah Johnson
+   - Complete: W-4 tax forms, direct deposit setup, benefits enrollment
+   - Review: Employee handbook, code of conduct, confidentiality agreement
+
+3. IT SETUP (10:00 AM - 11:30 AM)
+   - IT will provide: Laptop, phone, access credentials
+   - Setup your accounts:
+     * Email: firstname.lastname@techcorp.com
+     * Slack workspace: techcorp.slack.com
+     * VPN credentials for remote work
+     * GitHub/GitLab access (for engineers)
+
+4. EMAIL SIGNATURE SETUP (11:30 AM)
+   - Required format:
+     [Your Name]
+     [Your Job Title]
+     TechCorp Solutions
+     Phone: [Your Extension]
+     Email: firstname.lastname@techcorp.com
+     Website: www.techcorp.com
+   
+   - Optional: LinkedIn profile link, pronouns
+   - Font: Arial, 10pt, color #333333
+
+AFTERNOON (1:00 PM - 5:00 PM)
+-----------------------------
+
+5. TEAM LUNCH (12:00 PM - 1:00 PM)
+   - Your manager will take you to lunch with the team
+   - Company covers lunch for new hires on Day 1
+   - This is informal - ask questions, get to know your teammates
+
+6. MANAGER 1:1 MEETING (1:00 PM - 2:00 PM)
+   - Meet with your direct manager
+   - Discuss:
+     * Role expectations and 30-60-90 day goals
+     * Team structure and key stakeholders
+     * Upcoming projects and priorities
+     * Communication preferences and meeting schedules
+   
+   WHAT TO ASK YOUR MANAGER:
+   - "What does success look like in my first 30 days?"
+   - "Who are the key people I should connect with?"
+   - "What's the best way to reach you if I have questions?"
+   - "Are there any team norms or unwritten rules I should know?"
+   - "What resources should I review to get up to speed?"
+
+7. WORKSPACE SETUP (2:00 PM - 3:00 PM)
+   - Set up your desk/workstation
+   - Install required software (IT will provide list)
+   - Join team Slack channels
+   - Add yourself to team calendar
+
+8. TEAM INTRODUCTIONS (3:00 PM - 5:00 PM)
+   - Schedule 15-minute coffee chats with each team member
+   - Introduce yourself in team Slack channel
+   - Review team documentation and wikis
+
+========================================
+FIRST WEEK PRIORITIES
+========================================
+
+DAYS 2-3: LEARNING & SETUP
+--------------------------
+- Complete all mandatory training modules in the Learning Portal
+  * Cybersecurity awareness (required)
+  * Diversity and inclusion training (required)
+  * Code of conduct review (required)
+  * Role-specific technical training (if applicable)
+
+- Schedule meetings with:
+  * Your onboarding buddy (assigned by manager)
+  * Cross-functional team leads
+  * HR for benefits Q&A
+
+- Begin reviewing:
+  * Product documentation
+  * Team processes and workflows
+  * Recent project history
+
+DAYS 4-5: SHADOWING & SMALL TASKS
+---------------------------------
+- Shadow team members in meetings
+- Take on small, low-risk tasks assigned by your manager
+- Start contributing to team standups/check-ins
+- Ask questions - no question is too small!
+
+========================================
+REMOTE WORK POLICY
+========================================
+
+HYBRID SCHEDULE
+--------------
+- Employees can work remotely up to 3 days per week
+- Required in-office days: Tuesdays and Thursdays (team collaboration days)
+- Core hours: 10:00 AM - 3:00 PM (must be available)
+- Flexible start time: Between 7:00 AM - 10:00 AM
+
+REMOTE WORK GUIDELINES
+---------------------
+- Use VPN for all company system access
+- Keep Slack status updated (available, in a meeting, away)
+- Response time expectation: Within 2 hours during core hours
+- Video on for all team meetings
+- Maintain secure home office setup (IT will provide guidelines)
+
+========================================
+COMMUNICATION NORMS
+========================================
+
+EMAIL
+-----
+- Use for: Formal communications, external stakeholders, documentation
+- Response time: Within 24 hours during business days
+- Use clear subject lines and action items
+
+SLACK
+-----
+- Use for: Quick questions, team updates, informal communication
+- @mention people for urgent matters
+- Use threads to keep conversations organized
+- Response time: Within 2 hours during core hours
+
+MEETINGS
+--------
+- All meetings must have: Agenda, clear purpose, designated note-taker
+- Default to 25 or 50-minute meetings (leave buffer time)
+- Decline meetings if you're not needed (it's okay!)
+- Camera on for team meetings, optional for large all-hands
+
+========================================
+BENEFITS & PERKS
+========================================
+
+HEALTH INSURANCE
+---------------
+- Coverage starts on your first day
+- Medical, dental, vision plans available
+- Company covers 80% of employee premium
+- Enroll within first 30 days
+
+TIME OFF
+--------
+- Vacation: 15 days per year (prorated first year)
+- Sick leave: 10 days per year
+- Holidays: 12 company holidays
+- Request time off via Workday (manager approval required)
+- Minimum 2 weeks notice for vacation (1 week for urgent)
+
+PROFESSIONAL DEVELOPMENT
+-----------------------
+- Annual learning budget: $1,500 per employee
+- Conference attendance: 1 per year (with approval)
+- Internal training programs available
+- Lunch & Learn sessions every Friday
+
+OFFICE PERKS
+-----------
+- Free coffee, tea, snacks in kitchen
+- Catered lunch on Wednesdays
+- Gym membership reimbursement: $50/month
+- Standing desks available (request via IT)
+- Quiet rooms for focused work
+
+========================================
+IMPORTANT CONTACTS
+========================================
+
+IT Support
+- Email: itsupport@techcorp.com
+- Slack: #it-help
+- Phone: ext. 5000
+- For: Technical issues, software requests, access problems
+
+HR Department
+- Email: hr@techcorp.com
+- Slack: #hr-questions
+- Phone: ext. 5100
+- For: Benefits, payroll, policies, workplace concerns
+
+Facilities
+- Email: facilities@techcorp.com
+- Slack: #facilities
+- Phone: ext. 5200
+- For: Office access, parking, building issues
+
+========================================
+30-60-90 DAY MILESTONES
+========================================
+
+30 DAYS
+-------
+- Complete all onboarding training
+- Understand team goals and your role
+- Build relationships with immediate team
+- Complete first small project/task
+- Have weekly 1:1s with manager
+
+60 DAYS
+-------
+- Take ownership of specific work streams
+- Contribute to team meetings with ideas
+- Understand company products/services deeply
+- Build cross-functional relationships
+- Identify areas for process improvement
+
+90 DAYS
+-------
+- Work independently on assigned projects
+- Mentor newer team members
+- Demonstrate company values in daily work
+- Provide feedback on onboarding experience
+- Set personal development goals with manager
+
+========================================
+COMPANY VALUES
+========================================
+
+1. CUSTOMER FIRST
+   - Every decision should benefit our customers
+   - Listen actively and respond with empathy
+   - Deliver quality work on time
+
+2. COLLABORATION OVER COMPETITION
+   - Share knowledge freely
+   - Help teammates succeed
+   - Celebrate team wins
+
+3. CONTINUOUS LEARNING
+   - Ask questions and seek feedback
+   - Stay curious and try new approaches
+   - Share what you learn with others
+
+4. OWNERSHIP & ACCOUNTABILITY
+   - Take responsibility for your work
+   - Follow through on commitments
+   - Speak up when you see problems
+
+5. WORK-LIFE BALANCE
+   - Respect others' time and boundaries
+   - Disconnect after hours (no expectation to respond)
+   - Take your vacation time
+
+========================================
+FREQUENTLY ASKED QUESTIONS
+========================================
+
+Q: What should I wear to the office?
+A: Business casual. Think: nice jeans/slacks, collared shirt/blouse. No shorts or flip-flops.
+
+Q: Where do I park?
+A: Use the employee parking garage (west entrance). Your badge provides access. Spot assignments are first-come, first-served.
+
+Q: Can I bring my pet to work?
+A: We are a dog-friendly office! Dogs must be well-behaved and up-to-date on vaccinations. Register your pet with facilities.
+
+Q: How do I expense something?
+A: Use Expensify. Upload receipt, categorize expense, submit for manager approval. Reimbursement within 2 weeks.
+
+Q: What if I'm sick?
+A: Notify your manager ASAP via Slack/email. No doctor's note needed unless out 3+ consecutive days. Use sick days without guilt.
+
+Q: Can I work from a different city/state temporarily?
+A: Yes, with manager approval. Maximum 2 weeks at a time due to tax/compliance reasons. Must maintain regular working hours.
+
+Q: How do I request equipment (monitor, keyboard, etc.)?
+A: Submit ticket via IT portal or Slack #it-requests. Most requests approved within 3 business days.
+
+========================================
+EMERGENCY PROCEDURES
+========================================
+
+BUILDING EVACUATION
+- Alarm sounds: Exit via nearest stairwell (do not use elevators)
+- Gather at designated meeting point: North parking lot
+- Wait for all-clear from building management
+
+MEDICAL EMERGENCY
+- Call 911 first
+- Then notify: Building security (ext. 5911) and your manager
+- First aid kits located in every kitchen
+
+SECURITY CONCERNS
+- Report to: Building security (ext. 5911)
+- After hours: Call main security line (555-0199)
+
+========================================
+
+Your success is our priority! Don't hesitate to reach out to your manager, HR, or your onboarding buddy with any questions.
+
+Welcome to the team!
+
+- TechCorp HR Team

@@ -36,6 +36,7 @@ from app.config import (
     MAX_CONVERSATION_TURNS,
     get_config_summary,
 )
+from app.startup_checks import demo_startup_check
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -89,6 +90,15 @@ async def startup_event():
     # Log active configuration
     config_summary = get_config_summary()
     logger.info("RAGify configuration: %s", json.dumps(config_summary, indent=2))
+    
+    # Run demo mode startup checks (gracefully handle failures)
+    if RAGIFY_MODE == "demo":
+        try:
+            demo_startup_check(tenant_id="default")
+            logger.info("✓ Demo startup checks passed")
+        except Exception as e:
+            logger.warning(f"⚠ Demo startup check warning (non-blocking): {e}")
+            logger.info("  Application will continue running (RAG core features available)")
 
 
 @app.on_event("shutdown")
@@ -192,10 +202,12 @@ class QueryRequest(BaseModel):
     mode: str = DEFAULT_MODE  # Configured via RAGIFY_MODE (dev/demo/prod)
     conversation_id: Optional[int] = None  # Optional conversation context
     doc_ids: Optional[List[int]] = None  # Optional document IDs to filter search scope
+    debug: int = 0  # Debug level: 0=off, 1=detailed retrieval diagnostics
 
 
 class QueryResponse(BaseModel):
     answer: str
+    evidence: List[str]
     sources: List[str]
 
 
@@ -361,7 +373,8 @@ async def process_document_background(doc_id: int, tenant_id: str, file_path: st
         # Chunk text
         t1 = time.time()
         try:
-            chunks = ingestion.chunk_text(text)
+            # Prefer section-based chunking for better context fidelity
+            chunks = ingestion.chunk_text_sections(text)
             log_timing("text_chunking", time.time() - t1, tenant_id, filename=filename, num_chunks=len(chunks))
         except MemoryError:
             logger.exception("Out of memory while chunking text; falling back to single-chunk")
@@ -519,7 +532,12 @@ async def query(
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
+    # TENANT ISOLATION: Extract tenant_id from authenticated JWT token
     tenant_id = current_user["tenant_id"]
+    logger.info(
+        "Query endpoint: tenant_id=%s, username=%s, question=%s",
+        tenant_id, current_user.get("username", "unknown"), payload.question[:80]
+    )
     
     # Check rate limits
     rate_limiter = get_rate_limiter()
@@ -564,20 +582,60 @@ async def query(
             db.add(user_msg)
             db.commit()
     
-    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d, conversation_id=%s, history_len=%d, doc_ids=%s)", 
-                payload.question, tenant_id, request_id, mode, top_k, payload.conversation_id, len(conversation_history), payload.doc_ids)
+    logger.info("Query: %s (tenant=%s, request_id=%s, mode=%s, top_k=%d, conversation_id=%s, history_len=%d, doc_ids=%s, debug=%d)", 
+                payload.question, tenant_id, request_id, mode, top_k, payload.conversation_id, len(conversation_history), payload.doc_ids, payload.debug)
     
     # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
     query_start = time.time()
-    answer_gen, sources = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids)
+    answer_gen, sources, evidence, context_text, selected_chunks = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug)
     
     # Stream the answer tokens back to client
     async def stream_response():
         first_token = True
         token_count = 0
         full_answer = ""  # Collect full answer for saving to conversation
-        logger.info("Starting to stream response for request_id=%s", request_id)
+        logger.info("Starting to stream response for request_id=%s (evidence_count=%d)", request_id, len(evidence))
         
+        # Emit debug info: selected chunk IDs/headers and context-only block
+        # If debug=1, include detailed retrieval diagnostics
+        debug_obj = {
+            "evidence_count": len(evidence),
+            "sources_count": len(sources)
+        }
+        
+        # Add detailed diagnostics if debug mode enabled
+        if payload.debug >= 1:
+            debug_obj["retrieved_count"] = selected_chunks.get("retrieved_count", 0) if isinstance(selected_chunks, dict) else 0
+            debug_obj["selected_count"] = selected_chunks.get("selected_count", 0) if isinstance(selected_chunks, dict) else len(selected_chunks) if isinstance(selected_chunks, list) else 0
+            debug_obj["selected_chunks"] = selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks
+        else:
+            # Legacy: just include basic chunk info
+            debug_obj["selected_chunks"] = selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks
+            debug_obj["context"] = context_text
+        
+        yield json.dumps({"debug": debug_obj}) + "\n"
+
+        # GROUNDING ENFORCEMENT: If no evidence was found, return "Not found" response
+        # This ensures answers are grounded in the document or explicitly refused
+        if not evidence or not context_text.strip():
+            grounded_answer = "The document does not specify this information."
+            logger.warning(
+                "No evidence found for question; enforcing grounding refusal. "
+                "Question: %s..., evidence_count=%d, context_length=%d, request_id=%s",
+                payload.question[:80],
+                len(evidence),
+                len(context_text) if context_text else 0,
+                request_id
+            )
+            final_obj = {
+                "answer": grounded_answer,
+                "evidence": [],
+                "sources": sources or []
+            }
+            yield json.dumps(final_obj) + "\n"
+            return
+
+        # Otherwise, stream tokens and finish with structured schema
         async for chunk in answer_gen:
             if first_token:
                 log_timing("time_to_first_token", time.time() - query_start, tenant_id, question_length=len(payload.question))
@@ -585,17 +643,16 @@ async def query(
                 first_token = False
             token_count += 1
             full_answer += chunk  # Collect for saving
-            # Send each token as JSON + newline
             token_json = json.dumps({"token": chunk}) + "\n"
             logger.debug("Yielding token %d (len=%d) for request_id=%s", token_count, len(chunk), request_id)
             yield token_json
-        
+
         logger.info("Finished streaming %d tokens for request_id=%s", token_count, request_id)
         log_timing("query_complete", time.time() - query_start, tenant_id, 
                    question_length=len(payload.question), 
                    num_sources=len(sources),
                    tokens_generated=token_count)
-        
+
         # Save assistant response to conversation
         if conversation and db:
             try:
@@ -612,11 +669,15 @@ async def query(
             except Exception as e:
                 logger.error("Failed to save assistant response: %s", e)
                 # Don't fail the request if saving fails
-        
-        # Final message with sources
-        sources_json = json.dumps({"sources": sources}) + "\n"
-        logger.info("Sending %d sources for request_id=%s: %s", len(sources), request_id, sources)
-        yield sources_json
+
+        # Final structured schema with answer, evidence, and sources
+        final_obj = {
+            "answer": full_answer,
+            "evidence": evidence,
+            "sources": sources or []
+        }
+        logger.info("Sending final structured response for request_id=%s", request_id)
+        yield json.dumps(final_obj) + "\n"
     
     return StreamingResponse(stream_response(), media_type="application/x-ndjson")
 
@@ -680,6 +741,93 @@ async def list_documents(
     documents.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     
     return {"documents": documents}
+
+
+@app.get("/api/health/deps")
+async def dependency_health(current_user: dict = Depends(get_current_user)):
+    """Protected dependency health check for demo readiness (Ollama + Chroma)."""
+    ollama_ok = False
+    ollama_models = []
+    chroma_ok = False
+    chroma_count = 0
+
+    # Check Ollama
+    try:
+        http_client = clients.get_http_client()
+        resp = await http_client.get(f"{rag_service.OLLAMA_BASE_URL}/api/tags")
+        resp.raise_for_status()
+        data = resp.json()
+        ollama_models = [m.get("name") for m in data.get("models", [])]
+        ollama_ok = True
+    except Exception as e:
+        logger.warning("Ollama health check failed: %s", e)
+
+    # Check Chroma
+    try:
+        chroma_client = clients.get_chroma_client()
+        collection = chroma_client.get_or_create_collection(f"documents_{current_user['tenant_id']}")
+        chroma_count = collection.count()
+        chroma_ok = True
+    except Exception as e:
+        logger.warning("Chroma health check failed: %s", e)
+
+    status = {
+        "ollama_ok": ollama_ok,
+        "ollama_models": ollama_models,
+        "chroma_ok": chroma_ok,
+        "chroma_count": chroma_count,
+    }
+
+    overall = ollama_ok and chroma_ok
+    return {"status": "ok" if overall else "error", **status}
+
+
+@app.post("/api/documents/purge")
+async def purge_documents(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete all document metadata for this tenant and reset its vector store.
+
+    Useful when the UI shows stale filenames after a restart.
+    """
+    tenant_id = current_user["tenant_id"]
+    deleted = 0
+    removed_files = 0
+
+    # Remove files and DB rows for this tenant if DB is available
+    if db is not None:
+        try:
+            docs = db.query(Document).filter(Document.tenant_id == tenant_id).all()
+            for doc in docs:
+                if doc.file_path and os.path.exists(doc.file_path):
+                    try:
+                        os.remove(doc.file_path)
+                        removed_files += 1
+                    except Exception as e:
+                        logger.warning("Could not remove file %s: %s", doc.file_path, e)
+
+            deleted = db.query(Document).filter(Document.tenant_id == tenant_id).delete(synchronize_session=False)
+            db.commit()
+        except Exception as e:
+            if db is not None:
+                db.rollback()
+            logger.exception("Failed to purge documents for tenant %s: %s", tenant_id, e)
+            raise HTTPException(status_code=500, detail=f"Failed to purge documents: {e}")
+
+    # Reset vector store for this tenant
+    try:
+        reset_collection(tenant_id)
+    except Exception as e:
+        logger.exception("Failed to reset vector store for tenant %s: %s", tenant_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to reset vector store: {e}")
+
+    return {
+        "status": "ok",
+        "deleted": deleted,
+        "removed_files": removed_files,
+        "message": f"Cleared documents for tenant {tenant_id}",
+    }
 
 
 @app.get("/api/documents/{doc_id}/status")
@@ -747,3 +895,59 @@ async def reindex_document(
         "message": f"Reindexing started for {doc.filename}",
         "document": doc.to_dict()
     }
+
+
+@app.get("/api/debug/find_chunks")
+async def debug_find_chunks(
+    contains: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Protected debug endpoint: scan Chroma chunks for a substring.
+    Returns matching chunk_id, header (first non-empty line), and first 200 chars.
+    """
+    if not contains or not contains.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'contains' cannot be empty.")
+
+    tenant_id = current_user["tenant_id"]
+
+    # In mock mode, no Chroma content
+    if is_mock_mode():
+        return {"status": "ok", "tenant_id": tenant_id, "count": 0, "chunks": []}
+
+    try:
+        chroma_client = clients.get_chroma_client()
+        collection = chroma_client.get_or_create_collection(f"documents_{tenant_id}")
+        all_items = collection.get()
+
+        ids = all_items.get("ids", [])
+        docs = all_items.get("documents", [])
+        metas = all_items.get("metadatas", [])
+
+        query_lc = contains.lower()
+        matches = []
+        for i in range(len(docs)):
+            doc = docs[i]
+            if not doc:
+                continue
+            if query_lc in doc.lower():
+                chunk_id = ids[i] if i < len(ids) else None
+                # First non-empty line as header
+                header = None
+                for line in doc.splitlines():
+                    if line.strip():
+                        header = line.strip()
+                        break
+                preview = doc[:200].replace("\n", " ")
+                src = metas[i].get("source_file", metas[i].get("filename", "unknown")) if i < len(metas) else "unknown"
+                matches.append({
+                    "chunk_id": chunk_id,
+                    "source": src,
+                    "header": header or preview,
+                    "preview": preview
+                })
+
+        return {"status": "ok", "tenant_id": tenant_id, "count": len(matches), "chunks": matches}
+    except Exception as e:
+        logger.exception("Failed to scan chunks: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to scan chunks: {e}")

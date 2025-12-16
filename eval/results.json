@@ -1,0 +1,355 @@
+{
+  "timestamp": "2025-12-16T14:46:18.684917",
+  "pass_rate": 46.666666666666664,
+  "passed": 7,
+  "total": 15,
+  "results": [
+    {
+      "q_id": 1,
+      "question": "What time should I arrive on my first day?",
+      "category": "first_day_basics",
+      "passed": false,
+      "keywords_required": [
+        "8:00",
+        "8 am"
+      ],
+      "keywords_matched": [
+        "8:00"
+      ],
+      "answer": "8:00 AM (on the 3rd floor)",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_30",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_14",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_11",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_40",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_12"
+      ]
+    },
+    {
+      "q_id": 2,
+      "question": "What documents do I need to bring on my first day?",
+      "category": "first_day_basics",
+      "passed": true,
+      "keywords_required": [
+        "id",
+        "offer"
+      ],
+      "keywords_matched": [
+        "id",
+        "offer"
+      ],
+      "answer": "You need to bring a signed offer letter, completed I-9 form, and Government-issued ID.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_30",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_14",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_5",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_11",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_4"
+      ]
+    },
+    {
+      "q_id": 3,
+      "question": "How do I set up my email signature?",
+      "category": "email_setup",
+      "passed": false,
+      "keywords_required": [
+        "signature",
+        "arial"
+      ],
+      "keywords_matched": [],
+      "answer": "The answer is: The document does not specify this.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_7",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_15",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_6",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_5",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_4"
+      ]
+    },
+    {
+      "q_id": 4,
+      "question": "How many days can I work remotely in a week?",
+      "category": "remote_work",
+      "passed": true,
+      "keywords_required": [
+        "3"
+      ],
+      "keywords_matched": [
+        "3"
+      ],
+      "answer": "The employee can work remotely up to 3 days per week.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_23",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_47",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_31",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_7",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_26"
+      ]
+    },
+    {
+      "q_id": 5,
+      "question": "What are the core hours I need to be available?",
+      "category": "remote_work",
+      "passed": false,
+      "keywords_required": [
+        "10",
+        "3"
+      ],
+      "keywords_matched": [],
+      "answer": "Within 2 hours during core hours.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_27",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_23",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_24",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_13",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_6"
+      ]
+    },
+    {
+      "q_id": 6,
+      "question": "Do I need to have my camera on for meetings?",
+      "category": "remote_work",
+      "passed": false,
+      "keywords_required": [
+        "camera",
+        "video"
+      ],
+      "keywords_matched": [],
+      "answer": "The document does not specify this.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_19",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_28",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_15",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_49",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_6"
+      ]
+    },
+    {
+      "q_id": 7,
+      "question": "What should I ask my manager in our first 1:1?",
+      "category": "manager_meeting",
+      "passed": true,
+      "keywords_required": [
+        "success",
+        "30 days"
+      ],
+      "keywords_matched": [
+        "success",
+        "30 days"
+      ],
+      "answer": "What does success look like in my first 30 days?",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_12",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_11",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_50",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_14",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_40"
+      ]
+    },
+    {
+      "q_id": 8,
+      "question": "How many vacation days do I get?",
+      "category": "benefits_time_off",
+      "passed": true,
+      "keywords_required": [
+        "15"
+      ],
+      "keywords_matched": [
+        "15"
+      ],
+      "answer": "15 days per year (prorated first year).",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_31",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_47",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_23",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_13",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_14"
+      ]
+    },
+    {
+      "q_id": 9,
+      "question": "When does my health insurance start?",
+      "category": "benefits_time_off",
+      "passed": true,
+      "keywords_required": [
+        "health insurance",
+        "first day"
+      ],
+      "keywords_matched": [
+        "health insurance",
+        "first day"
+      ],
+      "answer": "- Your health insurance starts on your first day.\n- It is available through Company covers 80% of employee premium.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_30",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_5",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_50",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_14",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_46"
+      ]
+    },
+    {
+      "q_id": 10,
+      "question": "What if I need to take a sick day?",
+      "category": "benefits_time_off",
+      "passed": false,
+      "keywords_required": [
+        "notify",
+        "manager"
+      ],
+      "keywords_matched": [],
+      "answer": "Q: What should I wear to the office?\nA: Business casual, think nice jeans/slacks, collared shirt/blouse.\n \nQ: Where do I park?\nA: Employee parking garage (west entrance). Badge provides access. Spot a...",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_47",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_31",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_11",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_46",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_15"
+      ]
+    },
+    {
+      "q_id": 11,
+      "question": "What's the dress code?",
+      "category": "office_logistics",
+      "passed": true,
+      "keywords_required": [
+        "business casual"
+      ],
+      "keywords_matched": [
+        "business casual"
+      ],
+      "answer": "The answer is \"Business casual\" as mentioned in Q: WHAT TO ASK YOUR MANAGER (2nd point).",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_46",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_5",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_18",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_45",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_8"
+      ]
+    },
+    {
+      "q_id": 12,
+      "question": "Can I bring my dog to work?",
+      "category": "office_logistics",
+      "passed": true,
+      "keywords_required": [
+        "dog"
+      ],
+      "keywords_matched": [
+        "dog"
+      ],
+      "answer": "Q: Yes, we are a dog-friendly office! Dogs must be well-behaved and up-to-date on vaccinations. Register your pet with facilities.\n\nThe document does not specify this.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_46",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_11",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_23",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_45",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_43"
+      ]
+    },
+    {
+      "q_id": 13,
+      "question": "How do I get reimbursed for an expense?",
+      "category": "office_logistics",
+      "passed": false,
+      "keywords_required": [
+        "expensify"
+      ],
+      "keywords_matched": [],
+      "answer": "I am not able to answer this question based on the provided Context. The document does not specify how to request reimbursement for expenses.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_43",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_33",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_47",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_5",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_45"
+      ]
+    },
+    {
+      "q_id": 14,
+      "question": "When should I use email vs Slack?",
+      "category": "communication",
+      "passed": false,
+      "keywords_required": [
+        "email",
+        "slack"
+      ],
+      "keywords_matched": [],
+      "answer": "1. ARRIVE AT THE OFFICE (8:00 AM) - 3rd floor.\n2. The document does not specify this.\n3. Respond time: Within 24 hours during business days.\n4. Business casual.\n5. Use the employee parking garage (wes...",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_46",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_45",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_14",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_12",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_40"
+      ]
+    },
+    {
+      "q_id": 15,
+      "question": "Does the company provide learning budget?",
+      "category": "professional_development",
+      "passed": false,
+      "keywords_required": [
+        "1500"
+      ],
+      "keywords_matched": [],
+      "answer": "Yes, the company provides an annual learning budget of $1,500 per employee.",
+      "evidence_count": 3,
+      "sources": [
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_32",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_36",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_19",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_26",
+        "Employee_Onboarding_Guide.txt#Employee_Onboarding_Guide.txt_37"
+      ]
+    }
+  ],
+  "by_category": {
+    "first_day_basics": {
+      "passed": 1,
+      "total": 2
+    },
+    "email_setup": {
+      "passed": 0,
+      "total": 1
+    },
+    "remote_work": {
+      "passed": 1,
+      "total": 3
+    },
+    "manager_meeting": {
+      "passed": 1,
+      "total": 1
+    },
+    "benefits_time_off": {
+      "passed": 2,
+      "total": 3
+    },
+    "office_logistics": {
+      "passed": 2,
+      "total": 3
+    },
+    "communication": {
+      "passed": 0,
+      "total": 1
+    },
+    "professional_development": {
+      "passed": 0,
+      "total": 1
+    }
+  }
+}
