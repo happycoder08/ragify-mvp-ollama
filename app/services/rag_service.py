@@ -45,6 +45,10 @@ STOPWORDS = {
     'have', 'had', 'should', 'could', 'would', 'can', 'may', 'i', 'my', 'me'
 }
 
+# Grounding gate constants
+MIN_SUPPORT = 2  # Minimum overlap count for evidence to proceed to LLM
+MAX_EVIDENCE_LINES = 6  # Maximum number of evidence lines to extract per chunk
+
 def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
     """Log timing events with structured JSON (RAG service)."""
     if not ENABLE_TIMING_LOGS:
@@ -525,6 +529,123 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str,
     return len(chunks)
 
 
+def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_EVIDENCE_LINES) -> list[str]:
+    """
+    Extract top evidence lines from a chunk based on lexical overlap with question.
+    Returns lines sorted by relevance (highest overlap first), up to max_lines.
+    
+    Args:
+        chunk_text: The text of the chunk to extract lines from
+        question: The user's question (for computing overlap)
+        max_lines: Maximum number of lines to return
+    
+    Returns:
+        List of relevant lines (up to max_lines), sorted by overlap score descending
+    """
+    if not chunk_text or not question:
+        return []
+    
+    # Normalize question to tokens (lowercase, remove stopwords)
+    q_tokens = set(_tokenize_and_filter(question))
+    if not q_tokens:
+        return []
+    
+    # Split chunk into lines and score each
+    lines = chunk_text.split('\n')
+    scored_lines = []
+    
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped or len(line_stripped) < 10:  # Skip empty/very short lines
+            continue
+        
+        # Tokenize line
+        line_tokens = set(_tokenize_and_filter(line_stripped))
+        if not line_tokens:
+            continue
+        
+        # Compute overlap count
+        overlap = len(q_tokens & line_tokens)
+        if overlap > 0:
+            scored_lines.append((line_stripped, overlap))
+    
+    # Sort by overlap (descending), then by line length (descending) for stability
+    scored_lines.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
+    
+    # Return top max_lines
+    return [line for line, _ in scored_lines[:max_lines]]
+
+
+def _compute_grounding_gate(
+    question: str,
+    selected_chunks: list[tuple[str, dict, float]],
+    chunk_ids: list[str]
+) -> tuple[bool, str, list[str], float]:
+    """
+    Deterministic grounding gate: check if retrieved chunks have sufficient evidence.
+    
+    Args:
+        question: User's question
+        selected_chunks: List of (doc_text, metadata, distance) tuples
+        chunk_ids: List of chunk IDs corresponding to selected_chunks
+    
+    Returns:
+        Tuple of (should_proceed, refusal_reason, evidence_lines, support_score)
+        - should_proceed: True if evidence is sufficient, False to refuse
+        - refusal_reason: "NOT_FOUND" if refused, empty string otherwise
+        - evidence_lines: List of extracted evidence lines from chunks
+        - support_score: Max overlap count across all evidence lines
+    """
+    import re
+    
+    # Extract evidence lines from all selected chunks
+    all_evidence_lines = []
+    for doc, meta, dist in selected_chunks:
+        chunk_lines = extract_evidence_lines(doc, question, max_lines=MAX_EVIDENCE_LINES)
+        all_evidence_lines.extend(chunk_lines)
+    
+    # Check 1: No evidence lines extracted
+    if not all_evidence_lines:
+        return False, "NOT_FOUND", [], 0.0
+    
+    # Compute support score: max overlap count across all evidence lines
+    q_tokens = set(_tokenize_and_filter(question))
+    max_overlap = 0
+    for line in all_evidence_lines:
+        line_tokens = set(_tokenize_and_filter(line))
+        overlap = len(q_tokens & line_tokens)
+        max_overlap = max(max_overlap, overlap)
+    
+    support_score = max_overlap
+    
+    # Check 2: Support score below minimum
+    if support_score < MIN_SUPPORT:
+        return False, "NOT_FOUND", all_evidence_lines, support_score
+    
+    # Check 3: Numeric/time-sensitive questions need numeric/time anchors
+    q_lower = question.lower()
+    # Detect numeric/time questions
+    has_numeric_question = bool(
+        re.search(r'\b\d+', question) or  # Contains digits
+        any(word in q_lower for word in ['time', 'when', 'hour', 'day', 'days', 'week', 'month', 'year', 'am', 'pm'])
+    )
+    
+    if has_numeric_question:
+        # Check if evidence contains numeric/time patterns
+        evidence_text = ' '.join(all_evidence_lines).lower()
+        has_numeric_anchor = bool(
+            re.search(r'\b\d+', evidence_text) or  # Contains digits
+            re.search(r'\b\d{1,2}:\d{2}', evidence_text) or  # Time pattern
+            re.search(r'\b(?:am|pm)\b', evidence_text)  # AM/PM
+        )
+        
+        if not has_numeric_anchor:
+            return False, "NOT_FOUND", all_evidence_lines, support_score
+    
+    # All checks passed
+    return True, "", all_evidence_lines, support_score
+
+
 async def query_collection(
     tenant_id: str, 
     question: str, 
@@ -972,6 +1093,38 @@ async def query_collection(
         "Evidence construction complete: selected_chunks=%d, evidence_count=%d",
         len(filtered_results), len(evidence)
     )
+    
+    # GROUNDING GATE: Check if evidence is sufficient before calling LLM
+    should_proceed, refusal_reason, gate_evidence_lines, gate_support_score = _compute_grounding_gate(
+        question, filtered_results, ids
+    )
+    
+    logger.info(
+        "Grounding gate: should_proceed=%s, refusal_reason=%s, evidence_lines=%d, support_score=%.2f",
+        should_proceed, refusal_reason, len(gate_evidence_lines), gate_support_score
+    )
+    
+    if not should_proceed:
+        # Return refusal response
+        async def refusal_gen():
+            yield ""
+        
+        refusal_debug_info = {
+            "retrieved_count": len(docs),
+            "selected_count": len(filtered_results),
+            "chunks": [],
+            "refused": True,
+            "refusal_reason": refusal_reason,
+            "support_score": gate_support_score,
+            "evidence_lines_count": len(gate_evidence_lines)
+        } if debug >= 1 else {"refused": True, "refusal_reason": refusal_reason}
+        
+        logger.warning(
+            "Grounding gate REFUSED query (reason=%s, support_score=%.2f): %s",
+            refusal_reason, gate_support_score, question[:100]
+        )
+        
+        return refusal_gen(), [], [], "", refusal_debug_info
     
     # Build debug info: include retrieved_count, selected_count, and detailed chunk diagnostics
     if debug >= 1:
