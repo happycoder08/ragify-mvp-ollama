@@ -525,6 +525,16 @@ def test_full_workflow(client, sample_document):
     
     assert debug_data["evidence_count"] > 0, f"Should have evidence (evidence_count={debug_data.get('evidence_count')}, retrieved_count={debug_data.get('retrieved_count')})"
     
+    # DETERMINISTIC ASSERTIONS: Verify tenant consistency
+    assert debug_data.get("tenant_id") == tenant_id, f"Query tenant_id ({debug_data.get('tenant_id')}) must match login tenant_id ({tenant_id})"
+    
+    # Verify collection naming convention
+    expected_collection_name = f"documents_{tenant_id}"
+    assert debug_data.get("collection_name") == expected_collection_name, f"Collection name must follow convention 'documents_{{tenant_id}}'"
+    
+    # Verify collection has chunks (document was indexed)
+    assert debug_data.get("collection_count", 0) > 0, f"Collection should have chunks (got {debug_data.get('collection_count')})"
+    
     # Parse final response
     final_data = final_events[0]["data"]
     final_response = QueryFinalResponse(**final_data)  # Pydantic validation

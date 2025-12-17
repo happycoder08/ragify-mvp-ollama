@@ -702,6 +702,18 @@ async def query(
     query_start = time.time()
     answer_gen, sources, evidence, context_text, selected_chunks = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug, request_id=request_id)
     
+    # Extract collection metadata for debug info
+    collection_name = f"documents_{tenant_id}"
+    collection_count = None
+    if payload.debug >= 1:
+        try:
+            from app.services.rag_service import _get_collection
+            collection = _get_collection(tenant_id)
+            collection_count = collection.count()
+        except Exception as e:
+            logger.warning(f"Failed to get collection count: {e}")
+            collection_count = None
+    
     # Stream the answer tokens back to client
     async def stream_response():
         first_token = True
@@ -716,6 +728,10 @@ async def query(
             retrieved_count=selected_chunks.get("retrieved_count") if isinstance(selected_chunks, dict) else None,
             selected_count=selected_chunks.get("selected_count") if isinstance(selected_chunks, dict) else (len(selected_chunks) if isinstance(selected_chunks, list) else None),
             request_id=request_id if payload.debug >= 1 else None,
+            tenant_id=tenant_id if payload.debug >= 1 else None,
+            collection_name=collection_name if payload.debug >= 1 else None,
+            collection_count=collection_count if payload.debug >= 1 else None,
+            doc_ids_filter=payload.doc_ids if payload.debug >= 1 and payload.doc_ids else None,
             top10_scores=selected_chunks.get("top10_scores") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
             grounding_gate=selected_chunks.get("grounding_gate") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
             selected_chunks=selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks,
