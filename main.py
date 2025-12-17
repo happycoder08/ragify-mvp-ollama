@@ -541,6 +541,11 @@ async def upload(
     uploaded_docs = []
     overall_start = time.time()
     logger.info(f"Processing {len(files)} files for upload")
+    
+    # Detect if we're using InlineTaskRunner (CI mode or testing)
+    is_inline_mode = hasattr(runtime.task_runner, 'submit') and not callable(runtime.task_runner)
+    if is_inline_mode:
+        logger.info("InlineTaskRunner detected - indexing will complete synchronously")
 
     for file in files:
         file_start = time.time()
@@ -600,7 +605,7 @@ async def upload(
         logger.info(f"Scheduled background processing for {file.filename} (doc_id={doc_id})")
         
         # With InlineTaskRunner, task is complete now - refresh document status
-        if doc_record and hasattr(task_runner, 'submit') and not callable(runtime.task_runner):
+        if is_inline_mode and doc_record and db:
             # InlineTaskRunner instance: task completed synchronously
             db.refresh(doc_record)
             # Update the response with fresh status
@@ -608,14 +613,22 @@ async def upload(
                 if doc_dict.get("id") == doc_record.id:
                     doc_dict["status"] = doc_record.status
                     doc_dict["error_message"] = doc_record.error_message
+                    logger.info(f"Document {doc_record.id} indexed synchronously: status={doc_record.status}")
                     break
         
         log_timing("file_upload_complete", time.time() - file_start, tenant_id, filename=file.filename)
 
     log_timing("upload_complete", time.time() - overall_start, tenant_id, files_count=len(files))
+    
+    # Build appropriate response message
+    if is_inline_mode:
+        message = f"{len(files)} file(s) uploaded and indexed successfully."
+    else:
+        message = f"{len(files)} file(s) uploaded. Processing in background."
+    
     return {
         "status": "ok", 
-        "message": f"{len(files)} file(s) uploaded. Processing in background.",
+        "message": message,
         "documents": uploaded_docs,
         "files_processed": len(files),
         "files_with_db_record": len(uploaded_docs)

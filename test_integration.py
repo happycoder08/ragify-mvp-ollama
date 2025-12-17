@@ -913,5 +913,80 @@ def test_ungrounded_answer_validation(client, test_db, temp_storage, sample_docu
             del os.environ["MOCK_UNGROUNDED"]
 
 
+def test_immediate_queryability_after_upload(client: TestClient, sample_document: str):
+    """
+    Test that documents are immediately queryable after upload in CI/inline mode.
+    
+    Verifies:
+    - Upload completes synchronously (InlineTaskRunner)
+    - Document status is "indexed" immediately after upload
+    - Chunks are persisted to vector store before upload returns
+    - Query immediately after upload returns evidence (evidence_count > 0)
+    - No polling or waiting required between upload and query
+    
+    This test ensures CI mode and test environments have predictable,
+    synchronous indexing behavior for reliable test execution.
+    """
+    # Login as test user
+    login_response = client.post("/api/login", json={"username": "test", "password": "test123"})
+    assert login_response.status_code == 200
+    token = login_response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Upload document (should complete indexing synchronously)
+    files = {"files": ("policy.txt", sample_document.encode(), "text/plain")}
+    upload_response = client.post("/api/upload", files=files, headers=headers)
+    assert upload_response.status_code == 200
+    upload_data = upload_response.json()
+    
+    # Verify upload response indicates synchronous completion
+    assert upload_data["status"] == "ok"
+    assert "indexed successfully" in upload_data["message"], "Message should indicate synchronous indexing"
+    
+    # Verify document status is "indexed" immediately (no polling needed)
+    assert len(upload_data["documents"]) == 1
+    doc = upload_data["documents"][0]
+    assert doc["status"] == "indexed", f"Expected indexed, got {doc['status']}"
+    assert doc["error_message"] is None
+    
+    # Query IMMEDIATELY after upload (no time.sleep needed)
+    query_response = client.post(
+        "/api/query",
+        json={"question": "What is the vacation policy?", "mode": "full", "debug": 1},
+        headers=headers
+    )
+    assert query_response.status_code == 200
+    
+    # Parse SSE events
+    events = parse_sse_events(query_response.text)
+    
+    # Extract debug info
+    debug_events = [e for e in events if e["event"] == "debug"]
+    assert len(debug_events) == 1
+    debug_data = debug_events[0]["data"]
+    
+    # Verify evidence was retrieved (chunks are in vector store)
+    assert debug_data["evidence_count"] > 0, (
+        f"Expected evidence_count > 0 immediately after upload, got {debug_data['evidence_count']}. "
+        f"retrieved_count={debug_data.get('retrieved_count')}, "
+        f"selected_count={debug_data.get('selected_count')}"
+    )
+    
+    # Verify final response includes evidence
+    final_events = [e for e in events if e["event"] == "final"]
+    assert len(final_events) == 1
+    final_data = final_events[0]["data"]
+    
+    assert len(final_data["evidence"]) > 0, "Expected evidence in final response"
+    assert final_data["refused"] is False, "Should not refuse when evidence is available"
+    assert "vacation" in final_data["answer"].lower(), "Answer should reference vacation policy"
+    
+    print("✓ Immediate queryability test passed")
+    print(f"  - Document indexed synchronously: {doc['filename']}")
+    print(f"  - Evidence count: {debug_data['evidence_count']}")
+    print(f"  - Retrieved chunks: {debug_data.get('retrieved_count')}")
+    print(f"  - Selected chunks: {debug_data.get('selected_count')}")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
