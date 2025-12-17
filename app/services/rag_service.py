@@ -1204,12 +1204,101 @@ async def query_collection(
     return answer_gen, detailed_sources, evidence, context, debug_info
 
 
+def answer_supported_by_evidence(answer: str, evidence: str) -> bool:
+    """
+    Validate that an answer is grounded in the provided evidence.
+    Uses deterministic lexical overlap to check if key facts in the answer appear in evidence.
+    
+    Args:
+        answer: The generated answer to validate
+        evidence: The evidence text (context) used to generate the answer
+    
+    Returns:
+        True if answer is supported by evidence, False otherwise
+    """
+    import re
+    
+    # Normalize both texts
+    answer_lower = answer.lower().strip()
+    evidence_lower = evidence.lower().strip()
+    
+    # Check for refusal patterns - these are always valid
+    refusal_patterns = [
+        "the document does not specify this",
+        "i don't have enough information",
+        "i could not find",
+        "not found in the",
+        "not mentioned in the",
+        "does not contain"
+    ]
+    if any(pattern in answer_lower for pattern in refusal_patterns):
+        return True
+    
+    # Extract meaningful tokens from answer (excluding very common words)
+    answer_tokens = set(_tokenize_and_filter(answer, min_len=3))
+    if not answer_tokens:
+        # Empty or too short answer - reject
+        return False
+    
+    # Extract tokens from evidence
+    evidence_tokens = set(_tokenize_and_filter(evidence, min_len=3))
+    if not evidence_tokens:
+        # No evidence - reject any non-refusal answer
+        return False
+    
+    # Compute overlap ratio
+    overlap = len(answer_tokens & evidence_tokens)
+    overlap_ratio = overlap / len(answer_tokens) if answer_tokens else 0.0
+    
+    # Extract numeric/time facts from answer (these must be in evidence)
+    answer_numbers = re.findall(r'\b\d+(?:\.\d+)?\b', answer)
+    answer_times = re.findall(r'\b\d{1,2}:\d{2}\s*(?:am|pm)?\b', answer_lower)
+    
+    # Check if numeric facts appear in evidence
+    for num in answer_numbers:
+        if num not in evidence:
+            # Numeric fact not in evidence - likely hallucination
+            logger.warning(
+                "Answer validation FAILED: numeric fact '%s' not found in evidence. Answer: %s",
+                num, answer[:100]
+            )
+            return False
+    
+    for time_str in answer_times:
+        # Normalize time string for matching (remove spaces)
+        time_normalized = time_str.replace(' ', '')
+        evidence_normalized = evidence_lower.replace(' ', '')
+        if time_normalized not in evidence_normalized:
+            logger.warning(
+                "Answer validation FAILED: time '%s' not found in evidence. Answer: %s",
+                time_str, answer[:100]
+            )
+            return False
+    
+    # Require at least 60% token overlap for non-numeric answers
+    MIN_OVERLAP_RATIO = 0.6
+    if overlap_ratio < MIN_OVERLAP_RATIO:
+        logger.warning(
+            "Answer validation FAILED: insufficient overlap (%.2f < %.2f). Answer tokens: %s, Evidence tokens (sample): %s",
+            overlap_ratio, MIN_OVERLAP_RATIO, list(answer_tokens)[:10], list(evidence_tokens)[:10]
+        )
+        return False
+    
+    # All checks passed
+    logger.info(
+        "Answer validation PASSED: overlap_ratio=%.2f, answer_tokens=%d, evidence_tokens=%d",
+        overlap_ratio, len(answer_tokens), len(evidence_tokens)
+    )
+    return True
+
+
 async def _call_chat_model(
     question: str, 
     context: str, 
     tenant_id: str, 
     mode: str = "full",
-    conversation_history: List[Dict] = None
+    conversation_history: List[Dict] = None,
+    validate_before_stream: bool = True
 ) -> AsyncGenerator[str, None]:
     """
     Call the configured LLM provider with the retrieved context.
@@ -1222,6 +1311,7 @@ async def _call_chat_model(
         tenant_id: Tenant identifier
         mode: "fast" (concise, limited tokens) or "full" (detailed, more tokens)
         conversation_history: Optional list of previous messages for context
+        validate_before_stream: If True, buffer answer and validate before streaming. If False, stream directly.
     """
     # Build conversation history text
     history_text = ""
@@ -1235,32 +1325,34 @@ async def _call_chat_model(
         instruction = (
             "ANSWER RULES (STRICT - Fast Mode):\n"
             "1. Maximum 2 sentences ONLY.\n"
-            "2. Use ONLY the most relevant facts from the Context below.\n"
-            "3. Extract exact details; do NOT add outside knowledge.\n"
-            "4. If the answer is NOT in the Context, respond: 'The document does not specify this.'\n"
-            "5. Include ONLY directly relevant information; skip unrelated sections.\n"
-            "6. For time/arrival questions: state the exact time (with AM/PM) and location in ONE sentence.\n"
-            "7. Do NOT include background information, Q/A sections, or general guidance unless directly answering the question.\n"
+            "2. You must answer using ONLY the Evidence lines below.\n"
+            "3. If Evidence does not contain the answer, output exactly: The document does not specify this.\n"
+            "4. Do not use conversation history as a source of truth; history is for continuity only.\n"
+            "5. Extract exact details; do NOT add outside knowledge.\n"
+            "6. Include ONLY directly relevant information; skip unrelated sections.\n"
+            "7. For time/arrival questions: state the exact time (with AM/PM) and location in ONE sentence.\n"
+            "8. Do NOT include background information, Q/A sections, or general guidance unless directly answering the question.\n"
             "\n"
             "Format: Direct answer in 1-2 short sentences."
         )
     else:
         instruction = (
             "ANSWER RULES:\n"
-            "1. Use ONLY the information found in the Context below.\n"
-            "2. Extract the exact details; do NOT add outside knowledge.\n"
-            "3. If the answer is NOT present in the Context, respond: 'The document does not specify this.'\n"
-            "4. Be concise and specific; avoid unrelated guidance.\n"
-            "5. If the question asks about time or arrival, include BOTH the exact time (with AM/PM) and the exact location/floor if present in the Context, in one short sentence.\n"
-            "6. Preserve the exact formatting of times (e.g., 8:00 AM) and floors (e.g., 3rd floor) as written.\n"
+            "1. You must answer using ONLY the Evidence lines below.\n"
+            "2. If Evidence does not contain the answer, output exactly: The document does not specify this.\n"
+            "3. Do not use conversation history as a source of truth; history is for continuity only.\n"
+            "4. Extract exact details; do NOT add outside knowledge.\n"
+            "5. Be concise and specific; avoid unrelated guidance.\n"
+            "6. If the question asks about time or arrival, include BOTH the exact time (with AM/PM) and the exact location/floor if present in the Evidence, in one short sentence.\n"
+            "7. Preserve the exact formatting of times (e.g., 8:00 AM) and floors (e.g., 3rd floor) as written.\n"
             "\n"
-            "Reminder: If the answer is visible in the Context, use it verbatim."
+            "Reminder: If the answer is visible in the Evidence, use it verbatim."
         )
 
     if mode == "fast":
         prompt = f"""{instruction}
 
-{history_text if history_text else ""}Context:
+{history_text if history_text else ""}Evidence (authoritative):
 {context}
 
 Question: {question}
@@ -1270,7 +1362,7 @@ Answer:"""
     else:
         prompt = f"""{instruction}
 
-{history_text if history_text else ""}Context:
+{history_text if history_text else ""}Evidence (authoritative):
 {context}
 
 Question: {question}
@@ -1278,8 +1370,8 @@ Question: {question}
 Answer:"""
         max_tokens = MAX_TOKENS_FULL
 
-    logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s history_len=%d", 
-                len(question), len(context), mode, max_tokens, is_mock_mode(), len(conversation_history) if conversation_history else 0)
+    logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s history_len=%d validate=%s", 
+                len(question), len(context), mode, max_tokens, is_mock_mode(), len(conversation_history) if conversation_history else 0, validate_before_stream)
     
     # If mock mode, yield canned response immediately
     if is_mock_mode():
@@ -1302,17 +1394,53 @@ Answer:"""
             first_token_logged = True
     
     try:
-        async for token in llm_provider.generate_stream(
-            prompt, 
-            tenant_id, 
-            max_tokens=max_tokens, 
-            on_first_token=on_first_token,
-            timeout=llm_timeout
-        ):
-            yield token
-        
-        # Log completion timing
-        log_timing_rag("llm_generation_complete", time.time() - t_llm, tenant_id)
+        if validate_before_stream:
+            # BUFFERED MODE: Collect all tokens, validate, then stream
+            full_answer = ""
+            async for token in llm_provider.generate_stream(
+                prompt, 
+                tenant_id, 
+                max_tokens=max_tokens, 
+                on_first_token=on_first_token,
+                timeout=llm_timeout
+            ):
+                full_answer += token
+            
+            # Log completion timing
+            log_timing_rag("llm_generation_complete", time.time() - t_llm, tenant_id)
+            
+            # Validate answer against evidence
+            t_validate = time.time()
+            is_supported = answer_supported_by_evidence(full_answer, context)
+            validation_duration = time.time() - t_validate
+            log_timing_rag("answer_validation", validation_duration, tenant_id, 
+                          is_supported=is_supported, answer_length=len(full_answer))
+            
+            if not is_supported:
+                logger.warning(
+                    "Answer validation REJECTED. Replacing with refusal. Original: %s",
+                    full_answer[:200]
+                )
+                full_answer = "The document does not specify this."
+            
+            # Stream the (validated) answer in chunks to simulate streaming
+            CHUNK_SIZE = 75  # Characters per chunk
+            for i in range(0, len(full_answer), CHUNK_SIZE):
+                chunk = full_answer[i:i+CHUNK_SIZE]
+                yield chunk
+        else:
+            # DIRECT MODE: Stream tokens as they arrive (original behavior)
+            async for token in llm_provider.generate_stream(
+                prompt, 
+                tenant_id, 
+                max_tokens=max_tokens, 
+                on_first_token=on_first_token,
+                timeout=llm_timeout
+            ):
+                yield token
+            
+            # Log completion timing
+            log_timing_rag("llm_generation_complete", time.time() - t_llm, tenant_id)
         
     except Exception as e:
         logger.exception("LLM generation request failed: %s", e)
