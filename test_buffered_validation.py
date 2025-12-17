@@ -22,30 +22,26 @@ def test_answer_supported_by_evidence():
     """Test validation function with various scenarios."""
     print("\n=== Testing answer_supported_by_evidence ===")
     
-    # Test 1: Valid answer with matching facts
+    # Test 1: Exact refusal phrase
+    evidence = "Some content here."
+    answer = "The document does not specify this."
+    
+    result = answer_supported_by_evidence(answer, evidence)
+    assert result is True, "Exact refusal phrase should always be accepted"
+    print("✓ Test 1 passed: Exact refusal phrase accepted")
+    
+    # Test 2: Valid answer with K=2 token overlap
     evidence = """
     New employees should arrive at 8:00 AM on their first day.
     Report to the main reception on the 3rd floor.
-    The onboarding session starts promptly at 9:00 AM.
     """
-    answer = "New employees should arrive at 8:00 AM at the main reception on the 3rd floor."
+    answer = "Employees should arrive at the reception."
     
     result = answer_supported_by_evidence(answer, evidence)
-    assert result is True, "Valid answer should be supported"
-    print("✓ Test 1 passed: Valid answer accepted")
+    assert result is True, "Answer with K=2 token overlap should be accepted"
+    print("✓ Test 2 passed: K=2 token overlap accepted")
     
-    # Test 2: Answer with hallucinated time
-    evidence = """
-    The onboarding session covers company policies and procedures.
-    You will meet your team members during the orientation.
-    """
-    answer = "The onboarding session starts at 9:00 AM on the 3rd floor."
-    
-    result = answer_supported_by_evidence(answer, evidence)
-    assert result is False, "Hallucinated time should be rejected"
-    print("✓ Test 2 passed: Hallucinated time rejected")
-    
-    # Test 3: Answer with hallucinated number
+    # Test 3: Answer with hallucinated number (not in evidence)
     evidence = """
     Employees receive vacation days based on tenure.
     The vacation policy is outlined in the employee handbook.
@@ -56,59 +52,82 @@ def test_answer_supported_by_evidence():
     assert result is False, "Hallucinated number should be rejected"
     print("✓ Test 3 passed: Hallucinated number rejected")
     
-    # Test 4: Refusal answer (always valid)
-    evidence = """
-    The onboarding process includes several training sessions.
-    """
-    answer = "The document does not specify this."
-    
-    result = answer_supported_by_evidence(answer, evidence)
-    assert result is True, "Refusal answer should always be accepted"
-    print("✓ Test 4 passed: Refusal answer accepted")
-    
-    # Test 5: Answer with insufficient overlap
-    evidence = """
-    The IT department will provide your laptop and access credentials.
-    You will need to complete security training on your first day.
-    """
-    answer = "The marketing team organizes weekly brainstorming sessions for new campaigns."
-    
-    result = answer_supported_by_evidence(answer, evidence)
-    assert result is False, "Unrelated answer should be rejected"
-    print("✓ Test 5 passed: Unrelated answer rejected")
-    
-    # Test 6: Valid answer with numeric facts
+    # Test 4: Answer with matching number
     evidence = """
     Employees are entitled to 15 vacation days per year.
     After 5 years of service, this increases to 20 days.
     """
-    answer = "Employees receive 15 vacation days annually, increasing to 20 days after 5 years."
+    answer = "Employees receive 15 vacation days annually."
     
     result = answer_supported_by_evidence(answer, evidence)
-    assert result is True, "Answer with matching numbers should be accepted"
-    print("✓ Test 6 passed: Answer with matching numbers accepted")
+    assert result is True, "Answer with matching number should be accepted"
+    print("✓ Test 4 passed: Answer with matching number accepted")
     
-    # Test 7: Mixed - some facts match, some hallucinated
+    # Test 5: Answer with matching time pattern
     evidence = """
-    The employee handbook is available on the intranet.
-    IT will set up your email account on day one.
+    New employees should arrive at 8:00 AM.
+    The onboarding session starts at 9:00 AM.
     """
-    answer = "Your email will be set up on day one, and you'll receive 15 vacation days."
+    answer = "The session starts at 9:00 AM."
     
     result = answer_supported_by_evidence(answer, evidence)
-    assert result is False, "Mixed answer with hallucination should be rejected"
-    print("✓ Test 7 passed: Mixed answer with hallucination rejected")
+    assert result is True, "Answer with matching time should be accepted"
+    print("✓ Test 5 passed: Answer with matching time accepted")
     
-    # Test 8: Case insensitivity
+    # Test 6: Answer with hallucinated time
     evidence = """
-    THE ONBOARDING SESSION STARTS AT 9:00 AM.
-    REPORT TO THE MAIN RECEPTION.
+    The onboarding session covers company policies.
+    You will meet your team during orientation.
     """
-    answer = "the onboarding session starts at 9:00 am at the main reception."
+    answer = "The session starts at 9:00 AM."
     
     result = answer_supported_by_evidence(answer, evidence)
-    assert result is True, "Case-insensitive matching should work"
-    print("✓ Test 8 passed: Case-insensitive matching works")
+    assert result is False, "Hallucinated time should be rejected"
+    print("✓ Test 6 passed: Hallucinated time rejected")
+    
+    # Test 7: Answer with only 1 token overlap (below K=2)
+    evidence = """
+    The company provides comprehensive health insurance.
+    Benefits include dental and vision coverage.
+    """
+    answer = "Employees get vacation time."
+    
+    result = answer_supported_by_evidence(answer, evidence)
+    assert result is False, "Only 1 token overlap should be rejected (K=2 required)"
+    print("✓ Test 7 passed: Insufficient overlap rejected")
+    
+    # Test 8: Stopword filtering works
+    evidence = """
+    The employee handbook is available on the company intranet.
+    All new hires must review it carefully.
+    """
+    answer = "The handbook is available on the intranet."
+    # After stopword removal: answer=['handbook', 'available', 'intranet'], evidence=['employee', 'handbook', 'available', 'company', 'intranet', 'new', 'hires', 'must', 'review', 'carefully']
+    # Overlap: {handbook, available, intranet} = 3 tokens >= K=2
+    
+    result = answer_supported_by_evidence(answer, evidence)
+    assert result is True, "Stopword filtering should work correctly"
+    print("✓ Test 8 passed: Stopword filtering works")
+    
+    # Test 9: Case insensitivity and punctuation handling
+    evidence = "THE MEETING STARTS AT 9:00 AM!"
+    answer = "the meeting starts at 9:00 am."
+    
+    result = answer_supported_by_evidence(answer, evidence)
+    assert result is True, "Case-insensitive and punctuation handling should work"
+    print("✓ Test 9 passed: Case insensitivity and punctuation handling works")
+    
+    # Test 10: Mixed numeric facts (some match, some don't)
+    evidence = """
+    Employees receive 15 vacation days after 1 year.
+    """
+    answer = "Employees get 15 days after 3 years of service."
+    # Has '15' (matches) and '3' (doesn't match)
+    # Since at least one number matches (15), should pass
+    
+    result = answer_supported_by_evidence(answer, evidence)
+    assert result is True, "At least one matching number should be sufficient"
+    print("✓ Test 10 passed: At least one matching number sufficient")
     
     print("\n=== All answer_supported_by_evidence tests passed ✓ ===\n")
 

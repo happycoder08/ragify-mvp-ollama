@@ -1204,92 +1204,90 @@ async def query_collection(
     return answer_gen, detailed_sources, evidence, context, debug_info
 
 
-def answer_supported_by_evidence(answer: str, evidence: str) -> bool:
+def answer_supported_by_evidence(answer: str, evidence_text: str) -> bool:
     """
     Validate that an answer is grounded in the provided evidence.
-    Uses deterministic lexical overlap to check if key facts in the answer appear in evidence.
+    Fast deterministic check using lexical overlap and pattern matching.
     
     Args:
         answer: The generated answer to validate
-        evidence: The evidence text (context) used to generate the answer
+        evidence_text: The evidence text (context) used to generate the answer
     
     Returns:
         True if answer is supported by evidence, False otherwise
+    
+    Rules:
+        1. Exact refusal phrase "The document does not specify this." → True
+        2. Normalize both texts (lowercase, remove punctuation, collapse whitespace)
+        3. Tokenize and remove stopwords
+        4. Require K=2 content tokens from answer in evidence OR
+           at least one numeric/time pattern match if answer contains digits/times
+        5. Otherwise → False
     """
     import re
+    import string
     
-    # Normalize both texts
-    answer_lower = answer.lower().strip()
-    evidence_lower = evidence.lower().strip()
-    
-    # Check for refusal patterns - these are always valid
-    refusal_patterns = [
-        "the document does not specify this",
-        "i don't have enough information",
-        "i could not find",
-        "not found in the",
-        "not mentioned in the",
-        "does not contain"
-    ]
-    if any(pattern in answer_lower for pattern in refusal_patterns):
+    # Rule 1: Check for exact refusal phrase
+    if "The document does not specify this." in answer:
         return True
     
-    # Extract meaningful tokens from answer (excluding very common words)
-    answer_tokens = set(_tokenize_and_filter(answer, min_len=3))
-    if not answer_tokens:
-        # Empty or too short answer - reject
-        return False
+    # Rule 2: Normalize - lowercase, remove punctuation, collapse whitespace
+    def normalize(text: str) -> str:
+        # Lowercase
+        text = text.lower()
+        # Remove punctuation
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        # Collapse whitespace
+        text = ' '.join(text.split())
+        return text
     
-    # Extract tokens from evidence
-    evidence_tokens = set(_tokenize_and_filter(evidence, min_len=3))
-    if not evidence_tokens:
-        # No evidence - reject any non-refusal answer
-        return False
+    answer_norm = normalize(answer)
+    evidence_norm = normalize(evidence_text)
     
-    # Compute overlap ratio
-    overlap = len(answer_tokens & evidence_tokens)
-    overlap_ratio = overlap / len(answer_tokens) if answer_tokens else 0.0
+    # Rule 3: Tokenize and remove stopwords
+    # Small built-in stopword set (common English words with little semantic value)
+    STOPWORDS = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+        'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
+        'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+        'would', 'should', 'could', 'may', 'might', 'can', 'this', 'that',
+        'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they'
+    }
     
-    # Extract numeric/time facts from answer (these must be in evidence)
-    answer_numbers = re.findall(r'\b\d+(?:\.\d+)?\b', answer)
-    answer_times = re.findall(r'\b\d{1,2}:\d{2}\s*(?:am|pm)?\b', answer_lower)
+    answer_tokens = set(t for t in answer_norm.split() if t and t not in STOPWORDS)
+    evidence_tokens = set(t for t in evidence_norm.split() if t and t not in STOPWORDS)
     
-    # Check if numeric facts appear in evidence
-    for num in answer_numbers:
-        if num not in evidence:
-            # Numeric fact not in evidence - likely hallucination
-            logger.warning(
-                "Answer validation FAILED: numeric fact '%s' not found in evidence. Answer: %s",
-                num, answer[:100]
-            )
+    # Rule 4a: Check if answer contains numeric/time patterns
+    has_digit = bool(re.search(r'\d', answer))
+    has_time = bool(re.search(r'\d{1,2}:\d{2}', answer))
+    has_ampm = bool(re.search(r'\b(?:am|pm)\b', answer.lower()))
+    
+    if has_digit or has_time or has_ampm:
+        # Answer contains numeric/time info - check if at least one pattern appears in evidence
+        # Extract all numbers from answer
+        answer_numbers = set(re.findall(r'\b\d+\b', answer))
+        evidence_numbers = set(re.findall(r'\b\d+\b', evidence_text))
+        
+        # Extract time patterns (HH:MM)
+        answer_times = set(re.findall(r'\d{1,2}:\d{2}', answer))
+        evidence_times = set(re.findall(r'\d{1,2}:\d{2}', evidence_text))
+        
+        # At least one number or time must match
+        if (answer_numbers & evidence_numbers) or (answer_times & evidence_times):
+            return True
+        else:
+            # Numeric/time pattern in answer but not in evidence - likely hallucination
             return False
     
-    for time_str in answer_times:
-        # Normalize time string for matching (remove spaces)
-        time_normalized = time_str.replace(' ', '')
-        evidence_normalized = evidence_lower.replace(' ', '')
-        if time_normalized not in evidence_normalized:
-            logger.warning(
-                "Answer validation FAILED: time '%s' not found in evidence. Answer: %s",
-                time_str, answer[:100]
-            )
-            return False
+    # Rule 4b: For non-numeric answers, require at least K=2 content tokens overlap
+    K = 2
+    overlap_count = len(answer_tokens & evidence_tokens)
     
-    # Require at least 60% token overlap for non-numeric answers
-    MIN_OVERLAP_RATIO = 0.6
-    if overlap_ratio < MIN_OVERLAP_RATIO:
-        logger.warning(
-            "Answer validation FAILED: insufficient overlap (%.2f < %.2f). Answer tokens: %s, Evidence tokens (sample): %s",
-            overlap_ratio, MIN_OVERLAP_RATIO, list(answer_tokens)[:10], list(evidence_tokens)[:10]
-        )
-        return False
+    if overlap_count >= K:
+        return True
     
-    # All checks passed
-    logger.info(
-        "Answer validation PASSED: overlap_ratio=%.2f, answer_tokens=%d, evidence_tokens=%d",
-        overlap_ratio, len(answer_tokens), len(evidence_tokens)
-    )
-    return True
+    # Rule 5: Failed all checks
+    return False
 
 
 async def _call_chat_model(
