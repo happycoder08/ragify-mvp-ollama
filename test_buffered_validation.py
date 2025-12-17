@@ -15,7 +15,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.services.rag_service import answer_supported_by_evidence
+from app.services.validation import answer_supported_by_evidence
 
 
 def test_answer_supported_by_evidence():

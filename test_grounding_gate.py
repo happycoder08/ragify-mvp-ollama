@@ -5,11 +5,11 @@ Tests the deterministic evidence validation before LLM calls.
 """
 
 import pytest
-from app.services.rag_service import (
+from app.services.grounding import (
     extract_evidence_lines,
     _compute_grounding_gate,
     MIN_SUPPORT,
-    MAX_EVIDENCE_LINES
+    MAX_EVIDENCE_LINES_TOTAL as MAX_EVIDENCE_LINES
 )
 
 

@@ -3,7 +3,7 @@ Simple test runner for grounding gate (no pytest required).
 """
 
 import sys
-from app.services.rag_service import (
+from app.services.grounding import (
     extract_evidence_lines,
     _compute_grounding_gate,
     MIN_SUPPORT,

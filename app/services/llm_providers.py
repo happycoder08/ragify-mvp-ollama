@@ -9,6 +9,7 @@ import json
 import time
 import logging
 import httpx
+import hashlib
 
 from app.config import LLM_PROVIDER as DEFAULT_PROVIDER, LLM_MODEL as DEFAULT_MODEL
 
@@ -201,6 +202,94 @@ class OpenAILLMProvider:
                 )
 
 
+class MockLLMProvider:
+    """
+    Mock LLM provider for testing and development.
+    
+    Returns deterministic responses based on prompt hash.
+    Can be configured to return ungrounded answers for validation testing.
+    
+    Enable via: LLM_PROVIDER=mock
+    
+    Environment variables:
+        MOCK_UNGROUNDED: Set to "true" to return intentionally ungrounded answers
+    """
+    
+    def __init__(self):
+        self.ungrounded_mode = os.getenv("MOCK_UNGROUNDED", "false").lower() == "true"
+        logger.info(f"Initialized MockLLMProvider (ungrounded_mode={self.ungrounded_mode})")
+        
+        # Predefined responses based on question keywords
+        self.grounded_responses = {
+            "vacation": "The vacation policy allows 15 days per year.",
+            "sick": "The document does not specify this.",
+            "onboarding": "New employees should arrive at 8:00 AM on the 3rd floor.",
+            "arrive": "New employees should arrive at 8:00 AM on the 3rd floor.",
+            "benefits": "The company provides health insurance and 401k matching.",
+            "policy": "Please refer to the employee handbook for policy details.",
+        }
+        
+        # Ungrounded responses (for testing validation rejection)
+        self.ungrounded_responses = {
+            "vacation": "Employees receive 30 days of vacation per year.",  # Hallucinated number
+            "sick": "Unlimited sick leave is provided.",  # Hallucinated policy
+            "onboarding": "Arrive at 9:30 AM on the 5th floor.",  # Wrong time/floor
+            "benefits": "Free lunch and gym membership included.",  # Not in docs
+            "policy": "All policies are available on the intranet.",  # Hallucinated location
+        }
+    
+    async def generate_stream(
+        self,
+        prompt: str,
+        tenant_id: str,
+        max_tokens: int = None,
+        on_first_token: callable = None,
+        timeout: int = None
+    ) -> AsyncGenerator[str, None]:
+        """
+        Generate deterministic mock response based on prompt content.
+        
+        Simulates token-by-token streaming for realistic behavior.
+        """
+        t_start = time.time()
+        
+        # Trigger first token callback immediately
+        if on_first_token:
+            on_first_token(0.001)
+        
+        # Determine response based on prompt keywords
+        prompt_lower = prompt.lower()
+        
+        # Select response set based on mode
+        response_set = self.ungrounded_responses if self.ungrounded_mode else self.grounded_responses
+        
+        # Find matching response
+        response = None
+        for keyword, text in response_set.items():
+            if keyword in prompt_lower:
+                response = text
+                break
+        
+        # Default response if no keyword match
+        if response is None:
+            response = "The document does not specify this."
+        
+        # Generate deterministic variation based on prompt hash (for uniqueness)
+        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()[:6]
+        
+        # Log the mock generation
+        logger.info(
+            "MockLLM generating response for tenant %s (prompt_hash=%s, ungrounded=%s, response_len=%d)",
+            tenant_id, prompt_hash, self.ungrounded_mode, len(response)
+        )
+        
+        # Stream response character by character (simulating token streaming)
+        for char in response:
+            yield char
+            # Small delay to simulate realistic streaming (optional, can be removed for speed)
+            # await asyncio.sleep(0.001)
+
+
 def create_llm_provider(http_client: httpx.AsyncClient = None) -> LLMProvider:
     """
     Factory function to create the appropriate LLM provider based on configuration.
@@ -208,20 +297,50 @@ def create_llm_provider(http_client: httpx.AsyncClient = None) -> LLMProvider:
     Uses centralized config from app.config (RAGIFY_MODE sets defaults).
     
     Environment variables (override config):
-        LLM_PROVIDER: "ollama" or "openai" (overrides config default)
+        LLM_PROVIDER: "ollama", "openai", or "mock" (overrides config default)
         LLM_MODEL: Model name (overrides config default)
         OLLAMA_BASE_URL: Ollama server URL (default: http://localhost:11434)
         OPENAI_API_KEY: OpenAI API key (required for OpenAI provider)
         OPENAI_BASE_URL: OpenAI API base URL (default: https://api.openai.com/v1)
+        MOCK_UNGROUNDED: Set to "true" for mock provider to return ungrounded answers
     
     Returns:
         Configured LLM provider instance
     """
     provider_type = os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER).lower()
     
-    if provider_type == "openai":
+    if provider_type == "mock":
+        return MockLLMProvider()
+    elif provider_type == "openai":
         return OpenAILLMProvider()
     elif provider_type == "ollama":
         return OllamaLLMProvider(http_client=http_client)
     else:
-        raise ValueError(f"Unknown LLM_PROVIDER: {provider_type}. Supported: 'ollama', 'openai'")
+        raise ValueError(f"Unknown LLM_PROVIDER: {provider_type}. Supported: 'ollama', 'openai', 'mock'")
+
+
+def create_embedding_provider(http_client: httpx.AsyncClient = None):
+    """
+    Factory function to create the appropriate embedding provider.
+    
+    For now, returns the same provider as LLM (providers handle both).
+    In future, could support separate embedding-only providers.
+    
+    Environment variables:
+        EMBEDDING_PROVIDER: "ollama", "openai", or "mock" (defaults to LLM_PROVIDER)
+        EMBEDDING_MODEL: Model name for embeddings (provider-specific defaults)
+    
+    Returns:
+        Configured embedding provider instance
+    """
+    # Use EMBEDDING_PROVIDER if set, otherwise fall back to LLM_PROVIDER
+    provider_type = os.getenv("EMBEDDING_PROVIDER", os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER)).lower()
+    
+    if provider_type == "mock":
+        return MockLLMProvider()  # Mock provider handles embeddings too
+    elif provider_type == "openai":
+        return OpenAILLMProvider()
+    elif provider_type == "ollama":
+        return OllamaLLMProvider(http_client=http_client)
+    else:
+        raise ValueError(f"Unknown EMBEDDING_PROVIDER: {provider_type}. Supported: 'ollama', 'openai', 'mock'")

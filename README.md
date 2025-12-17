@@ -179,9 +179,47 @@ See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions,
 | `JWT_SECRET_KEY` | `your-secret-key-change-in-production` | Secret key for JWT signing |
 | `JWT_ALGORITHM` | `HS256` | JWT algorithm |
 | `JWT_EXPIRY_HOURS` | `24` | Token expiry time |
+| `LLM_PROVIDER` | `ollama` | LLM backend (`ollama`, `openai`, `mock`) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `RAGIFY_OLLAMA_TIMEOUT` | `300` | Timeout for Ollama requests |
+| `OPENAI_API_KEY` | - | OpenAI API key (if using `openai` provider) |
+| `MOCK_UNGROUNDED` | `false` | Enable ungrounded answers for mock provider |
 | `RAGIFY_MOCK` | `0` | Enable mock mode (no Ollama/Chroma) |
+
+### LLM Provider Options
+
+RAGify supports multiple LLM backends via the `LLM_PROVIDER` environment variable:
+
+- **`ollama`** (default): Local Ollama instance
+  - Requires running Ollama server
+  - Models: `nomic-embed-text` (embeddings), `llama3` (chat)
+  - Best for: Local development, privacy-focused deployments
+
+- **`openai`**: OpenAI API
+  - Requires `OPENAI_API_KEY` environment variable
+  - Models: `text-embedding-3-small` (embeddings), `gpt-4` (chat)
+  - Best for: Production deployments, cloud hosting
+
+- **`mock`**: Mock provider for testing
+  - No external dependencies required
+  - Returns deterministic keyword-based responses
+  - Supports grounded and ungrounded modes (`MOCK_UNGROUNDED=true`)
+  - Best for: CI/CD pipelines, integration tests
+  - See [CI Testing Guide](CI_TESTING.md) for details
+
+**Example:**
+```bash
+# Use Ollama (default)
+LLM_PROVIDER=ollama uvicorn main:app --reload
+
+# Use OpenAI
+export OPENAI_API_KEY=sk-...
+LLM_PROVIDER=openai uvicorn main:app --reload
+
+# Use mock provider for testing
+LLM_PROVIDER=mock pytest test_integration.py -v
+```
+
 
 ### Adding New Tenants
 

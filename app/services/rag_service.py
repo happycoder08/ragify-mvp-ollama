@@ -8,6 +8,16 @@ import httpx
 from . import clients
 from .llm_providers import create_llm_provider, LLMProvider
 from .reranker_providers import create_reranker_provider, RerankerProvider
+from .grounding import (
+    extract_evidence_lines,
+    _compute_grounding_gate,
+    MIN_SUPPORT,
+    MIN_TOTAL_SUPPORT,
+    MAX_EVIDENCE_LINES_TOTAL,
+    MAX_EVIDENCE_LINES_PER_CHUNK,
+)
+from .validation import answer_supported_by_evidence
+from .llm_orchestrator import generate_answer_stream
 from app.guardrails import get_guardrail_config
 from app.config import (
     REQUEST_TIMEOUT,
@@ -37,6 +47,9 @@ _llm_provider: LLMProvider = None
 # Global reranker provider instance (initialized on first use)
 _reranker_provider: RerankerProvider = None
 
+# Global embedding provider instance (initialized on first use)
+_embedding_provider = None
+
 # Common English stopwords for filtering
 STOPWORDS = {
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'he',
@@ -44,12 +57,6 @@ STOPWORDS = {
     'what', 'when', 'where', 'who', 'which', 'why', 'how', 'do', 'does', 'did',
     'have', 'had', 'should', 'could', 'would', 'can', 'may', 'i', 'my', 'me'
 }
-
-# Grounding gate constants
-MIN_SUPPORT = 2  # Minimum single-line overlap count for evidence to proceed to LLM
-MIN_TOTAL_SUPPORT = 4  # Minimum sum of top 3 overlaps across all evidence lines
-MAX_EVIDENCE_LINES_TOTAL = 6  # Maximum total evidence lines across all chunks
-MAX_EVIDENCE_LINES_PER_CHUNK = 3  # Maximum evidence lines to extract per chunk
 
 def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
     """Log timing events with structured JSON (RAG service)."""
@@ -62,15 +69,6 @@ def log_timing_rag(event: str, duration: float, tenant_id: str, **extra):
         **extra
     }
     logger.info(json.dumps(log_data))
-
-
-# Common English stopwords for filtering
-STOPWORDS = {
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'he',
-    'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 'to', 'was', 'will', 'with',
-    'what', 'when', 'where', 'who', 'which', 'why', 'how', 'do', 'does', 'did',
-    'have', 'had', 'should', 'could', 'would', 'can', 'may', 'i', 'my', 'me'
-}
 
 
 def _tokenize_and_filter(text: str, min_len: int = 2) -> list:
@@ -301,7 +299,28 @@ _embedding_cache: Dict[str, List[float]] = {}
 
 
 def is_mock_mode() -> bool:
-    return os.getenv("RAGIFY_MOCK", "0") == "1"
+    """
+    Check if app is running in mock mode.
+    
+    Returns True if:
+    - RAGIFY_MOCK=1 (explicit mock mode)
+    - LLM_PROVIDER=mock (using mock provider)
+    - CI=true or APP_MODE=ci (CI environment)
+    """
+    # Explicit mock mode flag
+    if os.getenv("RAGIFY_MOCK", "0") == "1":
+        return True
+    
+    # LLM provider is set to mock
+    if os.getenv("LLM_PROVIDER", "").lower() == "mock":
+        return True
+    
+    # CI mode automatically enables mock
+    is_ci = (
+        os.getenv("CI", "").lower() in ("true", "1", "yes") or
+        os.getenv("APP_MODE", "").lower() == "ci"
+    )
+    return is_ci
 
 
 def _get_llm_provider() -> LLMProvider:
@@ -321,6 +340,23 @@ def _get_reranker_provider() -> RerankerProvider:
     return _reranker_provider
 
 
+def _get_embedding_provider():
+    """
+    Get or create the global embedding provider instance.
+    
+    Returns the embedding provider, which may be:
+    - An injected provider (for tests)
+    - A RealEmbedder (default, uses HTTP to call Ollama/OpenAI)
+    """
+    global _embedding_provider
+    if _embedding_provider is None:
+        # Lazy initialization: create default RealEmbedder
+        from app.services.embeddings import RealEmbedder
+        http_client = clients.get_http_client()
+        _embedding_provider = RealEmbedder(http_client=http_client)
+    return _embedding_provider
+
+
 def _get_collection(tenant_id: str = "default"):
     """Get tenant-specific collection from centralized ChromaDB client."""
     chroma_client = clients.get_chroma_client()
@@ -334,73 +370,23 @@ def _get_collection(tenant_id: str = "default"):
     return _tenant_collections[tenant_id]
 
 
-async def embed_texts(texts: List[str]) -> List[List[float]]:
+async def embed_texts(texts: List[str], tenant_id: str = "default") -> List[List[float]]:
     """
-    Get embeddings for a list of texts using a local Ollama embedding model.
-    Model: nomic-embed-text (run `ollama pull nomic-embed-text` first).
-    Uses persistent async client and parallel requests with connection pooling.
+    Embed a list of texts using the configured embedding provider.
     
-    For single queries, uses embedding cache to avoid redundant requests.
-    """
-    logger.info("Embedding %d texts via Ollama (timeout=%ds) mock=%s", len(texts), REQUEST_TIMEOUT, is_mock_mode())
-    # If mock mode is enabled, return deterministic small vectors to avoid Ollama.
-    if is_mock_mode():
-        emb = [0.0] * 8
-        return [list(emb) for _ in texts]
-
-    client = clients.get_http_client()
-    embeddings: List[List[float]] = []
+    Uses the global embedding provider which can be:
+    - MockEmbedder for tests (deterministic SHA-256 vectors)
+    - RealEmbedder for production (HTTP calls to Ollama/OpenAI)
     
-    # Try to get cached embeddings for single-text queries
-    if len(texts) == 1:
-        text = texts[0]
-        if text in _embedding_cache:
-            logger.debug("Cache hit for embedding: %s...", text[:50])
-            return [_embedding_cache[text]]
-    
-    # Parallel embedding requests using persistent client (connection pooled)
-    async def embed_one(idx: int, text: str) -> List[float]:
-        """Embed a single text with error handling."""
-        payload = {"model": "nomic-embed-text", "prompt": text}
-        logger.debug("Requesting embedding for text %d (len=%d)", idx, len(text))
-        try:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/embeddings",
-                json=payload,
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.exception("Embedding request failed for text %d: %s", idx, e)
-            raise RuntimeError(
-                f"Failed to get embeddings from Ollama at {OLLAMA_BASE_URL}. "
-                f"Check that Ollama is running and the model 'nomic-embed-text' is pulled. Original error: {e}"
-            )
-        data = resp.json()
-        emb = data.get("embedding")
-        if emb is None:
-            raise RuntimeError("No embedding returned from Ollama.")
-        logger.debug("Received embedding for text %d (len=%d)", idx, len(emb))
-        return emb
-    
-    # Parallelize all embedding calls using persistent client connection pool
-    import asyncio
-    t_start = time.time()
-    embeddings = await asyncio.gather(*[embed_one(i, t) for i, t in enumerate(texts)])
-    total_time = time.time() - t_start
-    
-    # Log timing with all metrics in one JSON object
-    avg_text_length = sum(len(t) for t in texts) / len(texts) if texts else 0
-    log_timing_rag("embedding", total_time, "system", 
-                   num_texts=len(texts), 
-                   avg_length=int(avg_text_length),
-                   total_ms=round(total_time * 1000, 2),
-                   avg_ms_per_chunk=round((total_time * 1000) / len(texts), 2) if texts else 0)
-    
-    # Cache single-text embeddings for query optimization
-    if len(texts) == 1:
-        _embedding_cache[texts[0]] = embeddings[0]
+    Args:
+        texts: List of text strings to embed
+        tenant_id: Tenant identifier for isolation (used by embedding provider)
         
-    return embeddings
+    Returns:
+        List of embedding vectors (one per input text)
+    """
+    embedder = _get_embedding_provider()
+    return await embedder.embed_texts(texts, tenant_id=tenant_id)
 
 
 def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
@@ -491,7 +477,7 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str,
     
     # Embed all chunks with timing
     t_embed_start = time.time()
-    embeddings = await embed_texts(chunks)
+    embeddings = await embed_texts(chunks, tenant_id=tenant_id)
     embed_duration = time.time() - t_embed_start
     # Detailed embedding timing already logged in embed_texts
     
@@ -529,167 +515,6 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str,
     chroma_client.persist()
     
     return len(chunks)
-
-
-def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_EVIDENCE_LINES_PER_CHUNK) -> list[tuple[str, int]]:
-    """
-    Extract top evidence lines from a chunk based on lexical overlap with question.
-    Returns list of (line, overlap_count) tuples sorted by relevance, up to max_lines.
-    
-    Token-based filtering: excludes lines with <2 tokens unless they contain digits/time markers.
-    Tie-breaking: prefers bullets, anchor patterns (digits/times), and lines near headers.
-    
-    Args:
-        chunk_text: The text of the chunk to extract lines from
-        question: The user's question (for computing overlap)
-        max_lines: Maximum number of lines to return (default: MAX_EVIDENCE_LINES_PER_CHUNK)
-    
-    Returns:
-        List of (line, overlap_count) tuples, sorted by overlap score descending
-    """
-    import re
-    
-    if not chunk_text or not question:
-        return []
-    
-    # Normalize question to tokens (lowercase, remove stopwords)
-    q_tokens = set(_tokenize_and_filter(question))
-    if not q_tokens:
-        return []
-    
-    # Split chunk into lines and score each
-    lines = chunk_text.split('\n')
-    scored_lines = []
-    
-    for idx, line in enumerate(lines):
-        line_stripped = line.strip()
-        if not line_stripped:
-            continue
-        
-        # Token-based filter: exclude lines with <2 tokens unless they have digits/time markers
-        line_tokens = _tokenize_and_filter(line_stripped)
-        has_anchor = bool(re.search(r'\b\d+', line_stripped) or re.search(r'\b\d{1,2}:\d{2}', line_stripped))
-        
-        if len(line_tokens) < 2 and not has_anchor:
-            continue  # Skip lines with insufficient content
-        
-        # Tokenize line for overlap
-        line_token_set = set(line_tokens)
-        if not line_token_set:
-            continue
-        
-        # Compute overlap count
-        overlap = len(q_tokens & line_token_set)
-        if overlap > 0:
-            # Compute tie-breaker score components
-            is_bullet = bool(re.match(r'^\s*(?:[-*•]|\d+[.)])', line))
-            is_near_header = (idx == 0 or (idx > 0 and lines[idx-1].strip().endswith(':')))
-            
-            # Tie-breaker tuple: (overlap, is_bullet, has_anchor, is_near_header, line_length)
-            # Higher values sort first
-            tie_breaker = (
-                overlap,
-                1 if is_bullet else 0,
-                1 if has_anchor else 0,
-                1 if is_near_header else 0,
-                len(line_stripped)
-            )
-            
-            scored_lines.append((line_stripped, overlap, tie_breaker))
-    
-    # Sort by tie_breaker tuple (descending)
-    scored_lines.sort(key=lambda x: x[2], reverse=True)
-    
-    # Return top max_lines as (line, overlap) tuples
-    return [(line, overlap) for line, overlap, _ in scored_lines[:max_lines]]
-
-
-def _compute_grounding_gate(
-    question: str,
-    selected_chunks: list[tuple[str, dict, float]],
-    chunk_ids: list[str]
-) -> tuple[bool, str, list[str], float, float, str]:
-    """
-    Deterministic grounding gate: check if retrieved chunks have sufficient evidence.
-    
-    Uses global aggregation: extracts evidence from all chunks, then selects top MAX_EVIDENCE_LINES_TOTAL
-    lines globally with stable ordering.
-    
-    Gate conditions (ALL must pass):
-    1. Evidence lines non-empty
-    2. Max overlap >= MIN_SUPPORT (at least one line has strong match)
-    3. Sum of top 3 overlaps >= MIN_TOTAL_SUPPORT (cumulative evidence strength)
-    4. Numeric/time questions need numeric/time anchors in evidence
-    
-    Args:
-        question: User's question
-        selected_chunks: List of (doc_text, metadata, distance) tuples
-        chunk_ids: List of chunk IDs corresponding to selected_chunks
-    
-    Returns:
-        Tuple of (should_proceed, refusal_reason, evidence_lines, max_overlap, sum_top3, failed_check)
-        - should_proceed: True if evidence is sufficient, False to refuse
-        - refusal_reason: "NOT_FOUND" if refused, empty string otherwise
-        - evidence_lines: List of extracted evidence lines (text only)
-        - max_overlap: Max overlap count across all evidence lines
-        - sum_top3: Sum of top 3 overlap counts
-        - failed_check: "NO_EVIDENCE", "LOW_SUPPORT", "MISSING_ANCHOR", or "" if passed
-    """
-    import re
-    
-    # Extract evidence lines from all selected chunks (with overlap scores)
-    all_evidence_tuples = []
-    for doc, meta, dist in selected_chunks:
-        chunk_tuples = extract_evidence_lines(doc, question, max_lines=MAX_EVIDENCE_LINES_PER_CHUNK)
-        all_evidence_tuples.extend(chunk_tuples)
-    
-    # Check 1: No evidence lines extracted
-    if not all_evidence_tuples:
-        return False, "NOT_FOUND", [], 0.0, 0.0, "NO_EVIDENCE"
-    
-    # Global selection: sort all evidence tuples by overlap (descending) and take top MAX_EVIDENCE_LINES_TOTAL
-    # Sorting is already stable from extract_evidence_lines (includes tie-breakers)
-    all_evidence_tuples.sort(key=lambda x: x[1], reverse=True)
-    top_evidence_tuples = all_evidence_tuples[:MAX_EVIDENCE_LINES_TOTAL]
-    
-    # Extract overlap scores for threshold checks
-    overlap_scores = [overlap for _, overlap in top_evidence_tuples]
-    max_overlap = max(overlap_scores) if overlap_scores else 0
-    sum_top3 = sum(sorted(overlap_scores, reverse=True)[:3])
-    
-    # Extract text lines for return value
-    evidence_lines = [line for line, _ in top_evidence_tuples]
-    
-    # Check 2: Max overlap below minimum
-    if max_overlap < MIN_SUPPORT:
-        return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
-    
-    # Check 3: Sum of top 3 overlaps below minimum total support
-    if sum_top3 < MIN_TOTAL_SUPPORT:
-        return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
-    
-    # Check 4: Numeric/time-sensitive questions need numeric/time anchors
-    q_lower = question.lower()
-    # Detect numeric/time questions
-    has_numeric_question = bool(
-        re.search(r'\b\d+', question) or  # Contains digits
-        any(word in q_lower for word in ['time', 'when', 'hour', 'day', 'days', 'week', 'month', 'year', 'am', 'pm'])
-    )
-    
-    if has_numeric_question:
-        # Check if evidence contains numeric/time patterns
-        evidence_text = ' '.join(evidence_lines).lower()
-        has_numeric_anchor = bool(
-            re.search(r'\b\d+', evidence_text) or  # Contains digits
-            re.search(r'\b\d{1,2}:\d{2}', evidence_text) or  # Time pattern
-            re.search(r'\b(?:am|pm)\b', evidence_text)  # AM/PM
-        )
-        
-        if not has_numeric_anchor:
-            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "MISSING_ANCHOR"
-    
-    # All checks passed
-    return True, "", evidence_lines, max_overlap, sum_top3, ""
 
 
 async def query_collection(
@@ -750,7 +575,7 @@ async def query_collection(
     
     # embed question (using expanded version for better retrieval recall)
     t_embed = time.time()
-    q_embedding = (await embed_texts([expanded_question]))[0]
+    q_embedding = (await embed_texts([expanded_question], tenant_id=tenant_id))[0]
     # Embedding timing already logged in embed_texts
 
     t_retrieval = time.time()
@@ -1228,92 +1053,6 @@ async def query_collection(
     return answer_gen, detailed_sources, evidence, context, debug_info
 
 
-def answer_supported_by_evidence(answer: str, evidence_text: str) -> bool:
-    """
-    Validate that an answer is grounded in the provided evidence.
-    Fast deterministic check using lexical overlap and pattern matching.
-    
-    Args:
-        answer: The generated answer to validate
-        evidence_text: The evidence text (context) used to generate the answer
-    
-    Returns:
-        True if answer is supported by evidence, False otherwise
-    
-    Rules:
-        1. Exact refusal phrase "The document does not specify this." → True
-        2. Normalize both texts (lowercase, remove punctuation, collapse whitespace)
-        3. Tokenize and remove stopwords
-        4. Require K=2 content tokens from answer in evidence OR
-           at least one numeric/time pattern match if answer contains digits/times
-        5. Otherwise → False
-    """
-    import re
-    import string
-    
-    # Rule 1: Check for exact refusal phrase
-    if "The document does not specify this." in answer:
-        return True
-    
-    # Rule 2: Normalize - lowercase, remove punctuation, collapse whitespace
-    def normalize(text: str) -> str:
-        # Lowercase
-        text = text.lower()
-        # Remove punctuation
-        text = text.translate(str.maketrans('', '', string.punctuation))
-        # Collapse whitespace
-        text = ' '.join(text.split())
-        return text
-    
-    answer_norm = normalize(answer)
-    evidence_norm = normalize(evidence_text)
-    
-    # Rule 3: Tokenize and remove stopwords
-    # Small built-in stopword set (common English words with little semantic value)
-    STOPWORDS = {
-        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-        'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
-        'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
-        'would', 'should', 'could', 'may', 'might', 'can', 'this', 'that',
-        'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they'
-    }
-    
-    answer_tokens = set(t for t in answer_norm.split() if t and t not in STOPWORDS)
-    evidence_tokens = set(t for t in evidence_norm.split() if t and t not in STOPWORDS)
-    
-    # Rule 4a: Check if answer contains numeric/time patterns
-    has_digit = bool(re.search(r'\d', answer))
-    has_time = bool(re.search(r'\d{1,2}:\d{2}', answer))
-    has_ampm = bool(re.search(r'\b(?:am|pm)\b', answer.lower()))
-    
-    if has_digit or has_time or has_ampm:
-        # Answer contains numeric/time info - check if at least one pattern appears in evidence
-        # Extract all numbers from answer
-        answer_numbers = set(re.findall(r'\b\d+\b', answer))
-        evidence_numbers = set(re.findall(r'\b\d+\b', evidence_text))
-        
-        # Extract time patterns (HH:MM)
-        answer_times = set(re.findall(r'\d{1,2}:\d{2}', answer))
-        evidence_times = set(re.findall(r'\d{1,2}:\d{2}', evidence_text))
-        
-        # At least one number or time must match
-        if (answer_numbers & evidence_numbers) or (answer_times & evidence_times):
-            return True
-        else:
-            # Numeric/time pattern in answer but not in evidence - likely hallucination
-            return False
-    
-    # Rule 4b: For non-numeric answers, require at least K=2 content tokens overlap
-    K = 2
-    overlap_count = len(answer_tokens & evidence_tokens)
-    
-    if overlap_count >= K:
-        return True
-    
-    # Rule 5: Failed all checks
-    return False
-
-
 async def _call_chat_model(
     question: str, 
     context: str, 
@@ -1409,70 +1148,20 @@ Answer:"""
     guardrail_config = get_guardrail_config(tenant_id)
     llm_timeout = guardrail_config.llm_timeout_seconds
     
-    t_llm = time.time()
-    first_token_logged = False
-    
-    def on_first_token(duration: float):
-        """Callback when first token arrives."""
-        nonlocal first_token_logged
-        if not first_token_logged:
-            log_timing_rag("llm_first_token", duration, tenant_id, prompt_length=len(prompt))
-            first_token_logged = True
-    
-    try:
-        if validate_before_stream:
-            # BUFFERED MODE: Collect all tokens, validate, then stream
-            full_answer = ""
-            async for token in llm_provider.generate_stream(
-                prompt, 
-                tenant_id, 
-                max_tokens=max_tokens, 
-                on_first_token=on_first_token,
-                timeout=llm_timeout
-            ):
-                full_answer += token
-            
-            # Log completion timing
-            log_timing_rag("llm_generation_complete", time.time() - t_llm, tenant_id)
-            
-            # Validate answer against evidence
-            t_validate = time.time()
-            is_supported = answer_supported_by_evidence(full_answer, context)
-            validation_duration = time.time() - t_validate
-            log_timing_rag("answer_validation", validation_duration, tenant_id, 
-                          is_supported=is_supported, answer_length=len(full_answer), request_id=request_id or "no-request-id")
-            
-            if not is_supported:
-                logger.warning(
-                    "[%s] Answer validation REJECTED. Replacing with refusal. Original: %s",
-                    request_id or "no-request-id", full_answer[:200]
-                )
-                full_answer = "The document does not specify this."
-            else:
-                logger.info("[%s] Answer validation PASSED", request_id or "no-request-id")
-            
-            # Stream the (validated) answer in chunks to simulate streaming
-            CHUNK_SIZE = 75  # Characters per chunk
-            for i in range(0, len(full_answer), CHUNK_SIZE):
-                chunk = full_answer[i:i+CHUNK_SIZE]
-                yield chunk
-        else:
-            # DIRECT MODE: Stream tokens as they arrive (original behavior)
-            async for token in llm_provider.generate_stream(
-                prompt, 
-                tenant_id, 
-                max_tokens=max_tokens, 
-                on_first_token=on_first_token,
-                timeout=llm_timeout
-            ):
-                yield token
-            
-            # Log completion timing
-            log_timing_rag("llm_generation_complete", time.time() - t_llm, tenant_id)
-        
-    except Exception as e:
-        logger.exception("LLM generation request failed: %s", e)
-        raise
+    # Use the orchestrator for buffered streaming with validation or direct streaming
+    async for chunk in generate_answer_stream(
+        prompt=prompt,
+        tenant_id=tenant_id,
+        provider=llm_provider,
+        max_tokens=max_tokens,
+        timeout=llm_timeout,
+        validate_fn=answer_supported_by_evidence if validate_before_stream else None,
+        evidence_text=context,
+        refusal_text="The document does not specify this.",
+        request_id=request_id,
+        chunk_size=75
+    ):
+        yield chunk
 
 
 def clear_embedding_cache() -> None:

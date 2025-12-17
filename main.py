@@ -17,6 +17,7 @@ from app.services import rag_service
 from app.services import clients
 from app.services.rag_service import index_files, answer_question, is_mock_mode, reset_collection
 from app.auth import authenticate_user, create_access_token, get_current_user
+from app.runtime import build_runtime_from_env
 from app.database import init_db, get_db, test_connection
 from app.models import Document, Conversation, Message
 from app.tenant_config import get_tenant_config
@@ -37,6 +38,13 @@ from app.config import (
     get_config_summary,
 )
 from app.startup_checks import demo_startup_check
+from app.schemas.query import (
+    QueryRequest,
+    QueryFinalResponse,
+    EvidenceItem,
+    SourceItem,
+    DebugInfo,
+)
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -49,6 +57,9 @@ security = HTTPBearer()
 
 # Context variable for request tracking
 request_id_var = contextvars.ContextVar('request_id', default=None)
+
+# Global runtime instance (initialized at startup)
+runtime = None
 
 def log_timing(event: str, duration: float, tenant_id: str, **extra):
     """Log timing events with structured JSON."""
@@ -68,6 +79,23 @@ def log_timing(event: str, duration: float, tenant_id: str, **extra):
 @app.on_event("startup")
 async def startup_event():
     """Initialize database and clients on startup."""
+    global runtime
+    
+    # Detect CI mode early
+    is_ci_mode = (
+        os.getenv("CI", "").lower() in ("true", "1", "yes") or
+        os.getenv("APP_MODE", "").lower() == "ci"
+    )
+    
+    if is_ci_mode:
+        logger.info("=" * 60)
+        logger.info("CI MODE ENABLED")
+        logger.info("  - LLM Provider: mock (no Ollama/OpenAI required)")
+        logger.info("  - Embedding Provider: mock (deterministic vectors)")
+        logger.info("  - Task Runner: inline (synchronous execution)")
+        logger.info("  - HTTP Client: disabled")
+        logger.info("=" * 60)
+    
     logger.info("Initializing database...")
     try:
         init_db()
@@ -78,21 +106,32 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}. App will run without Postgres.")
     
-    # Initialize shared clients
+    # Initialize shared clients (skip HTTP client in CI mode)
     try:
         clients.initialize_chroma_client()
-        await clients.initialize_http_client()
-        logger.info("All clients initialized successfully")
+        if not is_ci_mode:
+            await clients.initialize_http_client()
+            logger.info("All clients initialized successfully")
+        else:
+            logger.info("ChromaDB initialized (HTTP client skipped in CI mode)")
     except Exception as e:
-        logger.error(f"Client initialization failed: {e}")
-        raise
+        if is_ci_mode:
+            # In CI mode, client initialization failures are non-fatal
+            logger.warning(f"Client initialization warning in CI mode: {e}")
+        else:
+            logger.error(f"Client initialization failed: {e}")
+            raise
+    
+    # Build runtime with all dependencies
+    runtime = build_runtime_from_env()
+    logger.info("AppRuntime initialized")
     
     # Log active configuration
     config_summary = get_config_summary()
     logger.info("RAGify configuration: %s", json.dumps(config_summary, indent=2))
     
     # Run demo mode startup checks (gracefully handle failures)
-    if RAGIFY_MODE == "demo":
+    if RAGIFY_MODE == "demo" and not is_ci_mode:
         try:
             demo_startup_check(tenant_id="default")
             logger.info("✓ Demo startup checks passed")
@@ -196,19 +235,8 @@ async def get_system_config():
     return get_config_summary()
 
 
-class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 4
-    mode: str = DEFAULT_MODE  # Configured via RAGIFY_MODE (dev/demo/prod)
-    conversation_id: Optional[int] = None  # Optional conversation context
-    doc_ids: Optional[List[int]] = None  # Optional document IDs to filter search scope
-    debug: int = 0  # Debug level: 0=off, 1=detailed retrieval diagnostics
-
-
-class QueryResponse(BaseModel):
-    answer: str
-    evidence: List[str]
-    sources: List[str]
+# QueryRequest is now imported from app.schemas.query
+# Legacy QueryResponse removed - use QueryFinalResponse instead
 
 
 class ConversationCreate(BaseModel):
@@ -354,14 +382,63 @@ async def delete_conversation(
     return {"status": "ok", "deleted_id": conversation_id}
 
 
-async def process_document_background(doc_id: int, tenant_id: str, file_path: str, filename: str):
+async def process_document_background(
+    doc_id: int,
+    tenant_id: str,
+    file_path: str,
+    filename: str,
+    db_session_factory
+):
     """
     Background task to process and index a document.
     Updates document status in database.
-    """
-    from app.database import SessionLocal
-    db = SessionLocal()
     
+    Args:
+        doc_id: Document ID in database
+        tenant_id: Tenant identifier for isolation
+        file_path: Path to uploaded file
+        filename: Original filename
+        db_session_factory: Factory function to create database session
+    """
+    # Determine if db_session_factory returns an async context manager
+    import inspect
+    
+    # Check if calling the factory would return an async context manager
+    # For functions decorated with @asynccontextmanager, we need to check if the result has __aenter__
+    is_async_cm_factory = False
+    if callable(db_session_factory):
+        # Try to detect by checking if it's an async function
+        if inspect.iscoroutinefunction(db_session_factory) or inspect.isasyncgenfunction(db_session_factory):
+            is_async_cm_factory = True
+        else:
+            # For @asynccontextmanager decorated functions, call it and check result
+            try:
+                result = db_session_factory()
+                if hasattr(result, '__aenter__'):
+                    is_async_cm_factory = True
+                    # Close the context manager we just created
+                    await result.__aexit__(None, None, None)
+            except Exception:
+                pass
+    
+    logger.debug(f"is_async_cm_factory: {is_async_cm_factory}")
+    
+    if is_async_cm_factory:
+        # Async context manager factory (test fixtures)
+        async with db_session_factory() as db:
+            await _process_document_with_db(doc_id, tenant_id, file_path, filename, db)
+    else:
+        # Sync callable (SessionLocal)
+        db = db_session_factory() if callable(db_session_factory) else None
+        try:
+            await _process_document_with_db(doc_id, tenant_id, file_path, filename, db)
+        finally:
+            if db is not None:
+                db.close()
+
+
+async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str, filename: str, db):
+    """Helper function to process document with database session."""
     try:
         logger.info(f"Background processing started for document {doc_id}: {filename}")
         
@@ -390,22 +467,22 @@ async def process_document_background(doc_id: int, tenant_id: str, file_path: st
         log_timing("indexing_total", time.time() - t2, tenant_id, filename=filename, num_chunks=num)
         
         # Update DB record to indexed
-        doc_record = db.query(Document).filter(Document.id == doc_id).first()
-        if doc_record:
-            doc_record.status = "indexed"
-            doc_record.error_message = None
-            db.commit()
-            logger.info(f"Document {doc_id} indexed successfully ({num} chunks)")
+        if db is not None and doc_id != -1:
+            doc_record = db.query(Document).filter(Document.id == doc_id).first()
+            if doc_record:
+                doc_record.status = "indexed"
+                doc_record.error_message = None
+                db.commit()
+                logger.info(f"Document {doc_id} indexed successfully ({num} chunks)")
         
     except Exception as e:
         logger.exception(f"Background indexing failed for document {doc_id}: {e}")
-        doc_record = db.query(Document).filter(Document.id == doc_id).first()
-        if doc_record:
-            doc_record.status = "failed"
-            doc_record.error_message = str(e)
-            db.commit()
-    finally:
-        db.close()
+        if db is not None and doc_id != -1:
+            doc_record = db.query(Document).filter(Document.id == doc_id).first()
+            if doc_record:
+                doc_record.status = "failed"
+                doc_record.error_message = str(e)
+                db.commit()
 
 
 @app.post("/api/upload")
@@ -501,14 +578,37 @@ async def upload(
         
         # Schedule background processing regardless of DB status
         doc_id = doc_record.id if doc_record else -1  # Use -1 to indicate no DB record
-        background_tasks.add_task(
+        
+        # Get task runner (handle both factory and instance)
+        # Production: runtime.task_runner is a factory (callable that takes BackgroundTasks)
+        # Testing: runtime.task_runner is an InlineTaskRunner instance
+        if callable(runtime.task_runner) and not hasattr(runtime.task_runner, 'submit'):
+            # Factory pattern (production)
+            task_runner = runtime.task_runner(background_tasks)
+        else:
+            # Instance pattern (testing with InlineTaskRunner)
+            task_runner = runtime.task_runner
+        
+        task_runner.submit(
             process_document_background,
-            doc_id,
-            tenant_id,
-            saved_path,
-            file.filename
+            doc_id=doc_id,
+            tenant_id=tenant_id,
+            file_path=saved_path,
+            filename=file.filename,
+            db_session_factory=runtime.get_db_session
         )
         logger.info(f"Scheduled background processing for {file.filename} (doc_id={doc_id})")
+        
+        # With InlineTaskRunner, task is complete now - refresh document status
+        if doc_record and hasattr(task_runner, 'submit') and not callable(runtime.task_runner):
+            # InlineTaskRunner instance: task completed synchronously
+            db.refresh(doc_record)
+            # Update the response with fresh status
+            for doc_dict in uploaded_docs:
+                if doc_dict.get("id") == doc_record.id:
+                    doc_dict["status"] = doc_record.status
+                    doc_dict["error_message"] = doc_record.error_message
+                    break
         
         log_timing("file_upload_complete", time.time() - file_start, tenant_id, filename=file.filename)
 
@@ -596,27 +696,22 @@ async def query(
         full_answer = ""  # Collect full answer for saving to conversation
         logger.info("Starting to stream response for request_id=%s (evidence_count=%d)", request_id, len(evidence))
         
-        # Emit debug info: selected chunk IDs/headers and context-only block
-        # If debug=1, include detailed retrieval diagnostics
-        debug_obj = {
-            "evidence_count": len(evidence),
-            "sources_count": len(sources)
-        }
+        # Build debug info using canonical schema
+        debug_info = DebugInfo(
+            evidence_count=len(evidence),
+            sources_count=len(sources),
+            retrieved_count=selected_chunks.get("retrieved_count") if isinstance(selected_chunks, dict) else None,
+            selected_count=selected_chunks.get("selected_count") if isinstance(selected_chunks, dict) else (len(selected_chunks) if isinstance(selected_chunks, list) else None),
+            request_id=request_id if payload.debug >= 1 else None,
+            top10_scores=selected_chunks.get("top10_scores") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
+            grounding_gate=selected_chunks.get("grounding_gate") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
+            selected_chunks=selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks,
+            context=context_text if payload.debug < 1 else None
+        )
         
-        # Add detailed diagnostics if debug mode enabled
-        if payload.debug >= 1:
-            debug_obj["retrieved_count"] = selected_chunks.get("retrieved_count", 0) if isinstance(selected_chunks, dict) else 0
-            debug_obj["selected_count"] = selected_chunks.get("selected_count", 0) if isinstance(selected_chunks, dict) else len(selected_chunks) if isinstance(selected_chunks, list) else 0
-            debug_obj["selected_chunks"] = selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks
-            debug_obj["request_id"] = request_id
-            debug_obj["top10_scores"] = selected_chunks.get("top10_scores", []) if isinstance(selected_chunks, dict) else []
-            debug_obj["grounding_gate"] = selected_chunks.get("grounding_gate", {}) if isinstance(selected_chunks, dict) else {}
-        else:
-            # Legacy: just include basic chunk info
-            debug_obj["selected_chunks"] = selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks
-            debug_obj["context"] = context_text
-        
-        yield json.dumps({"debug": debug_obj}) + "\n"
+        # Emit debug info as SSE event
+        yield f"event: debug\n"
+        yield f"data: {json.dumps(debug_info.dict(exclude_none=True))}\n\n"
 
         # GROUNDING ENFORCEMENT: If no evidence was found, return standardized refusal
         # Check if the query was refused (grounding gate rejection)
@@ -624,6 +719,7 @@ async def query(
         refusal_reason = selected_chunks.get("refusal_reason", "NOT_FOUND") if isinstance(selected_chunks, dict) else "NOT_FOUND"
         
         if is_refused or not evidence or not context_text.strip():
+            # Use canonical refusal message and schema
             refusal_answer = "The document does not specify this."
             logger.warning(
                 "[%s] Query refused or no evidence found (refused=%s, reason=%s). Question: %s..., evidence_count=%d, context_length=%d",
@@ -656,14 +752,17 @@ async def query(
                 except Exception as e:
                     logger.error("[%s] Failed to save refusal: %s", request_id, e)
             
-            final_obj = {
-                "answer": refusal_answer,
-                "evidence": [],
-                "sources": sources or [],
-                "refused": True,
-                "refusal_reason": refusal_reason
-            }
-            yield json.dumps(final_obj) + "\n"
+            # Build canonical refusal response
+            final_response = QueryFinalResponse(
+                answer=refusal_answer,
+                refused=True,
+                refusal_reason=refusal_reason,
+                evidence=[],
+                sources=[],
+                debug_info=debug_info if payload.debug >= 1 else None
+            )
+            yield f"event: final\n"
+            yield f"data: {json.dumps(final_response.dict(exclude_none=True))}\n\n"
             return
 
         # Otherwise, stream tokens and finish with structured schema
@@ -674,9 +773,9 @@ async def query(
                 first_token = False
             token_count += 1
             full_answer += chunk  # Collect for saving
-            token_json = json.dumps({"token": chunk}) + "\n"
             logger.debug("Yielding token %d (len=%d) for request_id=%s", token_count, len(chunk), request_id)
-            yield token_json
+            yield f"event: token\n"
+            yield f"data: {json.dumps({'t': chunk})}\n\n"
 
         logger.info("Finished streaming %d tokens for request_id=%s", token_count, request_id)
         total_latency = time.time() - query_start
@@ -704,16 +803,52 @@ async def query(
                 logger.error("Failed to save assistant response: %s", e)
                 # Don't fail the request if saving fails
 
-        # Final structured schema with answer, evidence, and sources
-        final_obj = {
-            "answer": full_answer,
-            "evidence": evidence,
-            "sources": sources or []
-        }
+        # Build canonical final response with proper schema
+        # Convert evidence strings to EvidenceItem objects
+        evidence_items = []
+        for i, ev_text in enumerate(evidence):
+            # Try to extract chunk_id from sources if available
+            chunk_id = sources[i].split("#")[1] if i < len(sources) and "#" in sources[i] else f"chunk_{i}"
+            evidence_items.append(EvidenceItem(
+                snippet=ev_text,
+                chunk_id=chunk_id,
+                heading=None,  # Could be extracted from chunk metadata if available
+                doc_id=None    # Could be extracted from chunk_id if format is known
+            ))
+        
+        # Convert sources to SourceItem objects
+        source_items = []
+        for src in (sources or []):
+            # Parse source format: "filename#chunk_id"
+            if "#" in src:
+                filename, chunk_id = src.split("#", 1)
+                source_items.append(SourceItem(
+                    doc_id=None,  # Could extract from chunk_id if format is "docid_filename_idx"
+                    filename=filename,
+                    chunk_id=chunk_id
+                ))
+            else:
+                source_items.append(SourceItem(
+                    doc_id=None,
+                    filename=src,
+                    chunk_id=None
+                ))
+        
+        # Build final response using canonical schema
+        final_response = QueryFinalResponse(
+            answer=full_answer,
+            refused=False,
+            refusal_reason=None,
+            evidence=evidence_items,
+            sources=source_items,
+            debug_info=debug_info if payload.debug >= 1 else None
+        )
+        
         logger.info("Sending final structured response for request_id=%s", request_id)
-        yield json.dumps(final_obj) + "\n"
+        yield f"event: final\n"
+        yield f"data: {json.dumps(final_response.dict(exclude_none=True))}\n\n"
     
-    return StreamingResponse(stream_response(), media_type="application/x-ndjson")
+    return StreamingResponse(stream_response(), media_type="text/event-stream")
 
 
 @app.post("/api/reset")

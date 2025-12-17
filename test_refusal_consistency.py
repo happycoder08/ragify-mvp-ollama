@@ -16,7 +16,8 @@ import uuid
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.services.rag_service import query_collection, _compute_grounding_gate
+from app.services.rag_service import query_collection
+from app.services.grounding import _compute_grounding_gate
 
 
 EXPECTED_REFUSAL_STRING = "The document does not specify this."
