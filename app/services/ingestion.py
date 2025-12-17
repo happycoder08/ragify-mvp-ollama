@@ -131,6 +131,9 @@ def chunk_text_sections(text: str, chunk_size: int = None, overlap: int = None) 
 
     def is_label_heading(line: str) -> bool:
         l = line.strip()
+        # Exclude bullets that end with colon (e.g., "- Required format:")
+        if re.match(r"^(?:[-*•]|\d+[.)])\s+", l):
+            return False
         return len(l) <= 120 and l.endswith(":")
 
     def is_allcaps_heading(line: str) -> bool:
@@ -179,11 +182,27 @@ def chunk_text_sections(text: str, chunk_size: int = None, overlap: int = None) 
         # Find heading line (first line of section)
         heading_idx = 0
         # Find contiguous bullet block immediately following the heading
+        # Include ALL lines that belong to bullets (including indented content)
         bullet_end_idx = heading_idx + 1
-        while bullet_end_idx < len(sec_lines) and is_bullet(sec_lines[bullet_end_idx]):
-            bullet_end_idx += 1
+        while bullet_end_idx < len(sec_lines):
+            current_line = sec_lines[bullet_end_idx]
+            # Continue if line is a bullet OR indented content under a bullet
+            if is_bullet(current_line):
+                bullet_end_idx += 1
+            elif current_line.strip() == "":
+                # Empty line: check if next line is a bullet to keep section together
+                if bullet_end_idx + 1 < len(sec_lines) and is_bullet(sec_lines[bullet_end_idx + 1]):
+                    bullet_end_idx += 1
+                else:
+                    break
+            elif current_line.startswith("  ") or current_line.startswith("\t"):
+                # Indented content belongs to previous bullet
+                bullet_end_idx += 1
+            else:
+                # Non-indented, non-bullet line: end of bullet block
+                break
         
-        # Collect heading + ALL contiguous bullets into first chunk
+        # Collect heading + ALL contiguous bullets (with their indented content) into first chunk
         # This guarantees heading+bullet block stays together (even if > chunk_size)
         first_chunk_lines = sec_lines[:bullet_end_idx]
         first_chunk_text = "".join(first_chunk_lines)

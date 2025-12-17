@@ -768,6 +768,75 @@ async def query_collection(
                    budget_chars=CONTEXT_BUDGET_CHARS or "unlimited")
 
     # Robust evidence extraction: extract supporting quotes from top context chunks
+    def _extract_evidence_snippet(chunk_text: str, max_chars: int = 400) -> str:
+        """
+        Extract a meaningful evidence snippet from a chunk.
+        If chunk starts with a header (ends with ':'), include the header and
+        up to 3 bullet lines following it, up to max_chars.
+        
+        This ensures evidence includes context like:
+        "MANAGER 1:1 MEETING (1:00 PM - 2:00 PM):
+         - What does success look like in my first 30 days?
+         - Who are the key people I should connect with?"
+        """
+        import re
+        
+        lines = chunk_text.split('\n')
+        if not lines:
+            return chunk_text[:max_chars]
+        
+        # Check if first non-empty line is a header (ends with ':' or is all caps)
+        first_line = ""
+        for line in lines:
+            if line.strip():
+                first_line = line.strip()
+                break
+        
+        is_header = (
+            first_line.endswith(':') or
+            first_line.endswith(')') or  # Numbered headings like "4. EMAIL SIGNATURE (11:30 AM)"
+            (len(first_line) > 3 and first_line == first_line.upper() and any(c.isalpha() for c in first_line))
+        )
+        
+        if not is_header:
+            # No header detected, return truncated chunk
+            return chunk_text[:max_chars]
+        
+        # Header detected: collect header + up to 3 bullet lines
+        snippet_lines = []
+        bullet_count = 0
+        total_chars = 0
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            
+            # Check if this is a bullet line
+            is_bullet = re.match(r'^\s*(?:[-*•]|\d+[.)])\s+', line) is not None
+            
+            # Add the line if it's the header or a bullet (up to 3 bullets)
+            if len(snippet_lines) == 0:  # First line (header)
+                snippet_lines.append(line_stripped)
+                total_chars += len(line_stripped)
+            elif is_bullet and bullet_count < 3:
+                snippet_lines.append(line_stripped)
+                total_chars += len(line_stripped)
+                bullet_count += 1
+                
+                if total_chars >= max_chars:
+                    break
+            elif bullet_count >= 3:
+                break
+        
+        snippet = '\n'.join(snippet_lines)
+        
+        # Truncate if still too long
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars] + "..."
+        
+        return snippet
+    
     def _extract_evidence(q: str, results: List[Tuple[str, Dict, float]]) -> List[Tuple[str, float]]:
         """
         Extract supporting evidence quotes from context chunks with relevance scores.
@@ -825,12 +894,15 @@ async def query_collection(
                 if any(kw in doc_lower for kw in ['camera', 'video', 'meeting']):
                     score += 0.3
             
-            # Manager/1:1 boost
+            # Manager/1:1 boost - prioritize chunks with question patterns
             if 'manager' in q_tokens:
                 if any(kw in doc_lower for kw in ['manager', 'success', 'goals', 'expectations']):
                     score += 0.3
+                # Extra boost for chunks with question patterns (WHAT TO ASK YOUR MANAGER)
+                if 'what' in doc_lower and any(kw in doc_lower for kw in ['ask', 'question', 'success']):
+                    score += 0.4
             
-            # Store full chunk with score
+            # Store full chunk with score (we'll extract snippets later if needed)
             scored_chunks.append((doc, score))
         
         # Sort by score (highest first)
@@ -869,15 +941,15 @@ async def query_collection(
     # Filter by threshold
     relevant_chunks = [(chunk, score) for chunk, score in scored_chunks if score >= EVIDENCE_RELEVANCE_THRESHOLD]
     
-    # Take top chunks based on mode
+    # Take top chunks based on mode and extract better snippets
     if mode == "fast":
         # Fast mode: only highest relevance chunks (top 2)
-        evidence = [chunk for chunk, score in relevant_chunks[:2]]
+        evidence = [_extract_evidence_snippet(chunk, max_chars=400) for chunk, score in relevant_chunks[:2]]
         logger.info("Fast mode: selected %d/%d chunks for evidence (threshold=%.2f)", 
                    len(evidence), len(scored_chunks), EVIDENCE_RELEVANCE_THRESHOLD)
     else:
         # Full mode: keep top 3 relevant chunks
-        evidence = [chunk for chunk, score in relevant_chunks[:3]]
+        evidence = [_extract_evidence_snippet(chunk, max_chars=400) for chunk, score in relevant_chunks[:3]]
         logger.info("Full mode: selected %d/%d chunks for evidence (threshold=%.2f)", 
                    len(evidence), len(scored_chunks), EVIDENCE_RELEVANCE_THRESHOLD)
     

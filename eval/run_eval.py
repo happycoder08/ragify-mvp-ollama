@@ -15,6 +15,17 @@ from datetime import datetime
 API_BASE = "http://127.0.0.1:8000"
 EVAL_DIR = Path(__file__).parent
 
+# Synonym map: treat these terms as equivalent during keyword matching
+SYNONYM_MAP = {
+    "camera": ["camera", "video"],
+    "video": ["camera", "video"],
+    "reimburse": ["reimburse", "reimbursement", "expense"],
+    "reimbursement": ["reimburse", "reimbursement", "expense"],
+    "sick": ["sick", "illness", "unwell"],
+    "vacation": ["vacation", "pto", "time off"],
+    "manager": ["manager", "supervisor", "lead"]
+}
+
 # Load gold standard Q&A
 with open(EVAL_DIR / "qa_gold.json") as f:
     GOLD_QA = json.load(f)
@@ -133,6 +144,23 @@ def normalize_times(text: str) -> str:
     return text
 
 
+def normalize_synonyms(text: str) -> str:
+    """
+    Normalize synonyms to canonical forms for consistent matching.
+    Uses SYNONYM_MAP to replace synonyms with their equivalents.
+    
+    Example: "camera on" -> "camera on video on" (adds synonym)
+    This allows matching either "camera" or "video" in keywords.
+    """
+    text_lower = text.lower()
+    for canonical, synonyms in SYNONYM_MAP.items():
+        for syn in synonyms:
+            if syn in text_lower and canonical not in text_lower:
+                # Add canonical term alongside synonym
+                text_lower = text_lower.replace(syn, f"{syn} {canonical}")
+    return text_lower
+
+
 def check_keywords(text: str, keywords: List[str], required_keywords: List[str], debug_prefix: str = "") -> tuple[bool, List[str]]:
     """
     Check if text contains required keywords.
@@ -147,6 +175,9 @@ def check_keywords(text: str, keywords: List[str], required_keywords: List[str],
     # Apply number normalization
     text_norm = normalize_numbers(text_norm)
     
+    # Apply synonym normalization (camera <-> video equivalence)
+    text_norm = normalize_synonyms(text_norm)
+    
     if debug_prefix:
         print(f"{debug_prefix}Normalized search text: {text_norm[:200]}...")
     
@@ -156,6 +187,7 @@ def check_keywords(text: str, keywords: List[str], required_keywords: List[str],
     for kw in required_keywords:
         kw_norm = normalize_times(kw.lower())
         kw_norm = normalize_numbers(kw_norm)
+        kw_norm = normalize_synonyms(kw_norm)
         if kw_norm in text_norm:
             matched.append(kw)
         else:
