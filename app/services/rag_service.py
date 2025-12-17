@@ -699,7 +699,8 @@ async def query_collection(
     mode: str = "full",
     conversation_history: List[Dict] = None,
     doc_ids: List[int] = None,
-    debug: int = 0
+    debug: int = 0,
+    request_id: str = None
 ) -> Tuple[AsyncGenerator[str, None], List[str], List[str], str, Dict[str, Any]]:
     """
     Perform a similarity search in the tenant-specific collection and answer the question using retrieved context.
@@ -713,9 +714,14 @@ async def query_collection(
         conversation_history: Optional list of previous messages for context
         doc_ids: Optional list of document IDs to filter retrieval (document-scoped search)
         debug: Debug level (0=off, 1=detailed diagnostics)
+        request_id: Request identifier for tracing (optional)
     """
-    logger.info("Query received from tenant %s: %s (history_len=%d, doc_ids=%s)", 
-                tenant_id, question, len(conversation_history) if conversation_history else 0, doc_ids)
+    import uuid
+    if not request_id:
+        request_id = str(uuid.uuid4())
+    
+    logger.info("[%s] Query received from tenant %s: %s (history_len=%d, doc_ids=%s)", 
+                request_id, tenant_id, question, len(conversation_history) if conversation_history else 0, doc_ids)
 
     # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
     if is_mock_mode():
@@ -778,11 +784,12 @@ async def query_collection(
     if not docs:
         async def not_found_gen():
             yield "I could not find anything relevant in the indexed documents."
-        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": []} if debug >= 1 else []
+        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": [], "request_id": request_id} if debug >= 1 else []
         return not_found_gen(), [], [], "", debug_info
 
-    # Log distances for debugging
-    logger.info("Retrieved %d chunks with distances: %s", len(distances), distances)
+    # Log top 10 retrieval scores for tracing
+    top10_scores = [(round(dist, 2), ids[i] if i < len(ids) else f"idx_{i}") for i, dist in enumerate(distances[:10])]
+    logger.info("[%s] Retrieved %d chunks, top 10 scores: %s", request_id, len(distances), top10_scores)
 
     # Filter out chunks with low similarity
     t_filter = time.time()
@@ -845,11 +852,16 @@ async def query_collection(
     TOP_CONTEXT_N = 5  # Always select top 5 after hybrid reranking
     if len(filtered_results) > TOP_CONTEXT_N:
         logger.info(
-            "Limiting from %d to top %d best chunks after hybrid scoring",
+            "[%s] Limiting from %d to top %d best chunks after hybrid scoring",
+            request_id,
             len(filtered_results),
             TOP_CONTEXT_N,
         )
         filtered_results = filtered_results[:TOP_CONTEXT_N]
+    
+    # Log selected chunks for tracing (no raw content)
+    selected_chunk_ids = [ids[i] if i < len(ids) else f"idx_{i}" for i in range(len(filtered_results))]
+    logger.info("[%s] Selected %d chunks: %s", request_id, len(filtered_results), selected_chunk_ids)
 
     context_pieces: List[str] = []
     sources: List[str] = []
@@ -1145,9 +1157,11 @@ async def query_collection(
         question, filtered_results, ids
     )
     
+    # Log evidence lines for tracing (truncated, no full content)
+    evidence_preview = [line[:80] + "..." if len(line) > 80 else line for line in gate_evidence_lines[:3]]
     logger.info(
-        "Grounding gate: should_proceed=%s, refusal_reason=%s, evidence_lines=%d, max_overlap=%.0f, sum_top3=%.0f, failed_check=%s",
-        should_proceed, refusal_reason, len(gate_evidence_lines), max_overlap, sum_top3, failed_check or "NONE"
+        "[%s] Grounding gate: should_proceed=%s, refusal_reason=%s, evidence_lines=%d, max_overlap=%.0f, sum_top3=%.0f, failed_check=%s, evidence_preview=%s",
+        request_id, should_proceed, refusal_reason, len(gate_evidence_lines), max_overlap, sum_top3, failed_check or "NONE", evidence_preview
     )
     
     if not should_proceed:
@@ -1164,12 +1178,13 @@ async def query_collection(
             "max_overlap": max_overlap,
             "sum_top3": sum_top3,
             "evidence_lines_count": len(gate_evidence_lines),
-            "failed_check": failed_check
-        } if debug >= 1 else {"refused": True, "refusal_reason": refusal_reason}
+            "failed_check": failed_check,
+            "request_id": request_id
+        } if debug >= 1 else {"refused": True, "refusal_reason": refusal_reason, "request_id": request_id}
         
         logger.warning(
-            "Grounding gate REFUSED query (reason=%s, failed_check=%s, max_overlap=%.0f, sum_top3=%.0f): %s",
-            refusal_reason, failed_check, max_overlap, sum_top3, question[:100]
+            "[%s] Grounding gate REFUSED query (reason=%s, failed_check=%s, max_overlap=%.0f, sum_top3=%.0f): %s",
+            request_id, refusal_reason, failed_check, max_overlap, sum_top3, question[:100]
         )
         
         return refusal_gen(), [], [], "", refusal_debug_info
@@ -1194,13 +1209,22 @@ async def query_collection(
         debug_info = {
             "retrieved_count": len(docs),
             "selected_count": len(filtered_results),
-            "chunks": detailed_chunks
+            "chunks": detailed_chunks,
+            "request_id": request_id,
+            "top10_scores": top10_scores,
+            "grounding_gate": {
+                "should_proceed": should_proceed,
+                "max_overlap": max_overlap,
+                "sum_top3": sum_top3,
+                "failed_check": failed_check,
+                "evidence_lines_count": len(gate_evidence_lines)
+            }
         }
     else:
         # Legacy mode: return simple selected_info list
         debug_info = selected_info
     
-    answer_gen = _call_chat_model(question, context, tenant_id, mode=mode, conversation_history=conversation_history)
+    answer_gen = _call_chat_model(question, context, tenant_id, mode=mode, conversation_history=conversation_history, request_id=request_id)
     return answer_gen, detailed_sources, evidence, context, debug_info
 
 
@@ -1296,7 +1320,8 @@ async def _call_chat_model(
     tenant_id: str, 
     mode: str = "full",
     conversation_history: List[Dict] = None,
-    validate_before_stream: bool = True
+    validate_before_stream: bool = True,
+    request_id: str = None
 ) -> AsyncGenerator[str, None]:
     """
     Call the configured LLM provider with the retrieved context.
@@ -1310,6 +1335,7 @@ async def _call_chat_model(
         mode: "fast" (concise, limited tokens) or "full" (detailed, more tokens)
         conversation_history: Optional list of previous messages for context
         validate_before_stream: If True, buffer answer and validate before streaming. If False, stream directly.
+        request_id: Request identifier for tracing (optional)
     """
     # Build conversation history text
     history_text = ""
@@ -1370,8 +1396,8 @@ Question: {question}
 Answer:"""
         max_tokens = MAX_TOKENS_FULL
 
-    logger.info("Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s history_len=%d validate=%s", 
-                len(question), len(context), mode, max_tokens, is_mock_mode(), len(conversation_history) if conversation_history else 0, validate_before_stream)
+    logger.info("[%s] Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s history_len=%d validate=%s", 
+                request_id or "no-request-id", len(question), len(context), mode, max_tokens, is_mock_mode(), len(conversation_history) if conversation_history else 0, validate_before_stream)
     
     # If mock mode, yield canned response immediately
     if is_mock_mode():
@@ -1414,14 +1440,16 @@ Answer:"""
             is_supported = answer_supported_by_evidence(full_answer, context)
             validation_duration = time.time() - t_validate
             log_timing_rag("answer_validation", validation_duration, tenant_id, 
-                          is_supported=is_supported, answer_length=len(full_answer))
+                          is_supported=is_supported, answer_length=len(full_answer), request_id=request_id or "no-request-id")
             
             if not is_supported:
                 logger.warning(
-                    "Answer validation REJECTED. Replacing with refusal. Original: %s",
-                    full_answer[:200]
+                    "[%s] Answer validation REJECTED. Replacing with refusal. Original: %s",
+                    request_id or "no-request-id", full_answer[:200]
                 )
                 full_answer = "The document does not specify this."
+            else:
+                logger.info("[%s] Answer validation PASSED", request_id or "no-request-id")
             
             # Stream the (validated) answer in chunks to simulate streaming
             CHUNK_SIZE = 75  # Characters per chunk
@@ -1498,7 +1526,8 @@ async def answer_question(
     mode: str = "full",
     conversation_history: List[Dict] = None,
     doc_ids: List[int] = None,
-    debug: int = 0
+    debug: int = 0,
+    request_id: str = None
 ) -> Tuple[AsyncGenerator[str, None], List[str], List[str], str, Dict[str, Any]]:
     """
     Convenience wrapper for query_collection with tenant support.
@@ -1511,6 +1540,7 @@ async def answer_question(
         conversation_history: Optional list of previous messages for context
         doc_ids: Optional list of document IDs to filter retrieval (document-scoped search)
         debug: Debug level (0=off, 1=detailed diagnostics)
+        request_id: Request identifier for tracing (optional)
     """
-    return await query_collection(tenant_id, question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=doc_ids, debug=debug)
+    return await query_collection(tenant_id, question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=doc_ids, debug=debug, request_id=request_id)
 

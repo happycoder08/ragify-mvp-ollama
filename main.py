@@ -587,7 +587,7 @@ async def query(
     
     # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
     query_start = time.time()
-    answer_gen, sources, evidence, context_text, selected_chunks = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug)
+    answer_gen, sources, evidence, context_text, selected_chunks = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug, request_id=request_id)
     
     # Stream the answer tokens back to client
     async def stream_response():
@@ -608,6 +608,9 @@ async def query(
             debug_obj["retrieved_count"] = selected_chunks.get("retrieved_count", 0) if isinstance(selected_chunks, dict) else 0
             debug_obj["selected_count"] = selected_chunks.get("selected_count", 0) if isinstance(selected_chunks, dict) else len(selected_chunks) if isinstance(selected_chunks, list) else 0
             debug_obj["selected_chunks"] = selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks
+            debug_obj["request_id"] = request_id
+            debug_obj["top10_scores"] = selected_chunks.get("top10_scores", []) if isinstance(selected_chunks, dict) else []
+            debug_obj["grounding_gate"] = selected_chunks.get("grounding_gate", {}) if isinstance(selected_chunks, dict) else {}
         else:
             # Legacy: just include basic chunk info
             debug_obj["selected_chunks"] = selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks
@@ -648,10 +651,13 @@ async def query(
             yield token_json
 
         logger.info("Finished streaming %d tokens for request_id=%s", token_count, request_id)
-        log_timing("query_complete", time.time() - query_start, tenant_id, 
+        total_latency = time.time() - query_start
+        log_timing("query_complete", total_latency, tenant_id, 
                    question_length=len(payload.question), 
                    num_sources=len(sources),
-                   tokens_generated=token_count)
+                   tokens_generated=token_count,
+                   request_id=request_id)
+        logger.info("[%s] Total query latency: %.2f seconds", request_id, total_latency)
 
         # Save assistant response to conversation
         if conversation and db:
