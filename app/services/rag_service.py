@@ -783,8 +783,8 @@ async def query_collection(
 
     if not docs:
         async def not_found_gen():
-            yield "I could not find anything relevant in the indexed documents."
-        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": [], "request_id": request_id} if debug >= 1 else []
+            yield "The document does not specify this."
+        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": [], "refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id} if debug >= 1 else {"refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id}
         return not_found_gen(), [], [], "", debug_info
 
     # Log top 10 retrieval scores for tracing
@@ -1165,26 +1165,26 @@ async def query_collection(
     )
     
     if not should_proceed:
-        # Return refusal response
+        # Return refusal response with standardized message
         async def refusal_gen():
-            yield ""
+            yield "The document does not specify this."
         
         refusal_debug_info = {
             "retrieved_count": len(docs),
             "selected_count": len(filtered_results),
             "chunks": [],
             "refused": True,
-            "refusal_reason": refusal_reason,
+            "refusal_reason": "NOT_FOUND",
             "max_overlap": max_overlap,
             "sum_top3": sum_top3,
             "evidence_lines_count": len(gate_evidence_lines),
             "failed_check": failed_check,
             "request_id": request_id
-        } if debug >= 1 else {"refused": True, "refusal_reason": refusal_reason, "request_id": request_id}
+        } if debug >= 1 else {"refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id}
         
         logger.warning(
-            "[%s] Grounding gate REFUSED query (reason=%s, failed_check=%s, max_overlap=%.0f, sum_top3=%.0f): %s",
-            request_id, refusal_reason, failed_check, max_overlap, sum_top3, question[:100]
+            "[%s] Grounding gate REFUSED query (reason=NOT_FOUND, failed_check=%s, max_overlap=%.0f, sum_top3=%.0f): %s",
+            request_id, failed_check, max_overlap, sum_top3, question[:100]
         )
         
         return refusal_gen(), [], [], "", refusal_debug_info

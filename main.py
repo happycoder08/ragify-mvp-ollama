@@ -618,22 +618,50 @@ async def query(
         
         yield json.dumps({"debug": debug_obj}) + "\n"
 
-        # GROUNDING ENFORCEMENT: If no evidence was found, return "Not found" response
-        # This ensures answers are grounded in the document or explicitly refused
-        if not evidence or not context_text.strip():
-            grounded_answer = "The document does not specify this information."
+        # GROUNDING ENFORCEMENT: If no evidence was found, return standardized refusal
+        # Check if the query was refused (grounding gate rejection)
+        is_refused = isinstance(selected_chunks, dict) and selected_chunks.get("refused", False)
+        refusal_reason = selected_chunks.get("refusal_reason", "NOT_FOUND") if isinstance(selected_chunks, dict) else "NOT_FOUND"
+        
+        if is_refused or not evidence or not context_text.strip():
+            refusal_answer = "The document does not specify this."
             logger.warning(
-                "No evidence found for question; enforcing grounding refusal. "
-                "Question: %s..., evidence_count=%d, context_length=%d, request_id=%s",
+                "[%s] Query refused or no evidence found (refused=%s, reason=%s). Question: %s..., evidence_count=%d, context_length=%d",
+                request_id,
+                is_refused,
+                refusal_reason,
                 payload.question[:80],
                 len(evidence),
-                len(context_text) if context_text else 0,
-                request_id
+                len(context_text) if context_text else 0
             )
+            
+            # Save refusal to conversation with metadata
+            if conversation and db:
+                try:
+                    refusal_metadata = json.dumps({
+                        "refused": True,
+                        "refusal_reason": refusal_reason,
+                        "failed_check": selected_chunks.get("failed_check") if isinstance(selected_chunks, dict) else None
+                    })
+                    assistant_msg = Message(
+                        conversation_id=payload.conversation_id,
+                        role="assistant",
+                        content=refusal_answer,
+                        sources=refusal_metadata
+                    )
+                    db.add(assistant_msg)
+                    conversation.updated_at = func.now()
+                    db.commit()
+                    logger.info("[%s] Saved refusal to conversation %d", request_id, payload.conversation_id)
+                except Exception as e:
+                    logger.error("[%s] Failed to save refusal: %s", request_id, e)
+            
             final_obj = {
-                "answer": grounded_answer,
+                "answer": refusal_answer,
                 "evidence": [],
-                "sources": sources or []
+                "sources": sources or [],
+                "refused": True,
+                "refusal_reason": refusal_reason
             }
             yield json.dumps(final_obj) + "\n"
             return
