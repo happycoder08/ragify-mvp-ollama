@@ -726,6 +726,9 @@
                 if (selectedDocs.length > 0) {
                     payload.doc_ids = selectedDocs;
                 }
+                
+                // Debug: log the final payload before sending
+                console.debug('Query payload:', JSON.stringify(payload, null, 2));
 
                 const response = await fetchWithAuth('/api/query', {
                     method: 'POST',

@@ -67,6 +67,10 @@ class DebugInfo(BaseModel):
     grounding_gate: Optional[dict] = Field(default=None, description="Grounding validation details")
     selected_chunks: Optional[List] = Field(default=None, description="Selected chunk metadata")
     context: Optional[str] = Field(default=None, description="Full context sent to LLM")
+    context_length: Optional[int] = Field(default=None, description="Length of context text in characters")
+    refused: Optional[bool] = Field(default=None, description="Whether query was refused by grounding gate")
+    refusal_reason: Optional[str] = Field(default=None, description="Reason for refusal if applicable")
+    failed_check: Optional[str] = Field(default=None, description="Which grounding check failed")
 
 
 class QueryFinalResponse(BaseModel):

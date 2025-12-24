@@ -235,6 +235,82 @@ async def get_system_config():
     return get_config_summary()
 
 
+@app.get("/api/debug")
+async def get_debug_info(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Protected endpoint: return debug information about tenant runtime and data."""
+    tenant_id = current_user["tenant_id"]
+    
+    # Get runtime provider information
+    llm_provider_name = runtime.llm_provider.__class__.__name__ if runtime else "Unknown"
+    embedding_provider_name = runtime.embedding_provider.__class__.__name__ if runtime else "Unknown"
+    
+    # Determine task runner name
+    task_runner_name = "Unknown"
+    if runtime:
+        if callable(runtime.task_runner) and not hasattr(runtime.task_runner, 'submit'):
+            task_runner_name = "BackgroundTaskRunner"
+        elif hasattr(runtime.task_runner, '__class__'):
+            task_runner_name = runtime.task_runner.__class__.__name__
+    
+    # Get collection information from ChromaDB
+    collection_name = f"documents_{tenant_id}"
+    collection_count = 0
+    collection_exists = False
+    
+    try:
+        from app.services import rag_service
+        collection = rag_service._get_collection(tenant_id)
+        collection_count = collection.count()
+        collection_exists = True
+    except Exception as e:
+        logger.debug(f"Could not access Chroma collection: {e}")
+    
+    # Get database information
+    db_enabled = runtime.db_enabled if runtime else False
+    documents_count = None
+    last_documents = []
+    
+    if db_enabled and db:
+        try:
+            # Get total documents count
+            documents_count = db.query(func.count(Document.id)).filter(
+                Document.tenant_id == tenant_id
+            ).scalar()
+            
+            # Get last 5 documents
+            db_docs = db.query(Document).filter(
+                Document.tenant_id == tenant_id
+            ).order_by(Document.created_at.desc()).limit(5).all()
+            
+            last_documents = [
+                {
+                    "id": doc.id,
+                    "filename": doc.filename,
+                    "status": doc.status,
+                    "created_at": doc.created_at.isoformat() if doc.created_at else None
+                }
+                for doc in db_docs
+            ]
+        except Exception as e:
+            logger.debug(f"Could not query database: {e}")
+    
+    return {
+        "tenant_id": tenant_id,
+        "llm_provider": llm_provider_name,
+        "embedding_provider": embedding_provider_name,
+        "task_runner": task_runner_name,
+        "collection_name": collection_name,
+        "collection_count": collection_count,
+        "collection_exists": collection_exists,
+        "db_enabled": db_enabled,
+        "documents_count": documents_count,
+        "last_documents": last_documents
+    }
+
+
 # QueryRequest is now imported from app.schemas.query
 # Legacy QueryResponse removed - use QueryFinalResponse instead
 
@@ -382,6 +458,63 @@ async def delete_conversation(
     return {"status": "ok", "deleted_id": conversation_id}
 
 
+async def _acquire_db_session(db_session_factory):
+    """
+    Helper to acquire a DB session from various factory types.
+    
+    Supports:
+    - Async context managers (has __aenter__)
+    - Sync context managers (has __enter__)
+    - Generator dependencies (FastAPI yield db)
+    - Direct Session objects
+    
+    Returns:
+        tuple: (session, cleanup_func) where cleanup_func is async callable or None
+    """
+    if db_session_factory is None:
+        return None, None
+    
+    # Direct Session object (already instantiated)
+    if hasattr(db_session_factory, 'query') and hasattr(db_session_factory, 'close'):
+        return db_session_factory, lambda: db_session_factory.close()
+    
+    # Try to call the factory
+    if callable(db_session_factory):
+        result = db_session_factory()
+        
+        # Async context manager
+        if hasattr(result, '__aenter__'):
+            session = await result.__aenter__()
+            cleanup = lambda: result.__aexit__(None, None, None)
+            return session, cleanup
+        
+        # Sync context manager
+        if hasattr(result, '__enter__'):
+            session = result.__enter__()
+            cleanup = lambda: result.__exit__(None, None, None)
+            return session, cleanup
+        
+        # Generator (FastAPI dependency with yield)
+        if hasattr(result, '__next__'):
+            try:
+                session = next(result)
+                def cleanup():
+                    try:
+                        next(result)
+                    except StopIteration:
+                        pass
+                return session, cleanup
+            except StopIteration:
+                return None, None
+        
+        # Direct Session returned from factory
+        if hasattr(result, 'query') and hasattr(result, 'close'):
+            return result, lambda: result.close()
+    
+    # Fallback
+    return None, None
+
+
 async def process_document_background(
     doc_id: int,
     tenant_id: str,
@@ -400,41 +533,19 @@ async def process_document_background(
         filename: Original filename
         db_session_factory: Factory function to create database session
     """
-    # Determine if db_session_factory returns an async context manager
-    import inspect
+    db_session, cleanup = await _acquire_db_session(db_session_factory)
     
-    # Check if calling the factory would return an async context manager
-    # For functions decorated with @asynccontextmanager, we need to check if the result has __aenter__
-    is_async_cm_factory = False
-    if callable(db_session_factory):
-        # Try to detect by checking if it's an async function
-        if inspect.iscoroutinefunction(db_session_factory) or inspect.isasyncgenfunction(db_session_factory):
-            is_async_cm_factory = True
-        else:
-            # For @asynccontextmanager decorated functions, call it and check result
+    try:
+        await _process_document_with_db(doc_id, tenant_id, file_path, filename, db_session)
+    finally:
+        if cleanup:
             try:
-                result = db_session_factory()
-                if hasattr(result, '__aenter__'):
-                    is_async_cm_factory = True
-                    # Close the context manager we just created
-                    await result.__aexit__(None, None, None)
-            except Exception:
-                pass
-    
-    logger.debug(f"is_async_cm_factory: {is_async_cm_factory}")
-    
-    if is_async_cm_factory:
-        # Async context manager factory (test fixtures)
-        async with db_session_factory() as db:
-            await _process_document_with_db(doc_id, tenant_id, file_path, filename, db)
-    else:
-        # Sync callable (SessionLocal)
-        db = db_session_factory() if callable(db_session_factory) else None
-        try:
-            await _process_document_with_db(doc_id, tenant_id, file_path, filename, db)
-        finally:
-            if db is not None:
-                db.close()
+                result = cleanup()
+                # Handle async cleanup
+                if hasattr(result, '__await__'):
+                    await result
+            except Exception as e:
+                logger.warning(f"Failed to cleanup DB session: {e}")
 
 
 async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str, filename: str, db):
@@ -463,26 +574,59 @@ async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str,
         # Index chunks with doc_id for filtering
         t2 = time.time()
         logger.info("Indexing chunks for %s...", file_path)
+        
+        # Capture collection count before indexing for verification
+        before_count = 0
+        try:
+            from app.services.rag_service import _get_collection
+            collection = _get_collection(tenant_id)
+            before_count = collection.count()
+        except Exception as e:
+            logger.warning(f"Could not get collection count before indexing: {e}")
+        
         num = await index_files(tenant_id, chunks, filename, doc_id=doc_id)
         log_timing("indexing_total", time.time() - t2, tenant_id, filename=filename, num_chunks=num)
         
+        # Verify indexing actually worked by checking collection count
+        if num > 0:
+            try:
+                from app.services.rag_service import _get_collection
+                collection = _get_collection(tenant_id)
+                after_count = collection.count()
+                
+                if after_count == 0 or after_count <= before_count:
+                    raise Exception(
+                        f"Index verification failed: Chroma count is {after_count} after indexing "
+                        f"{num} chunks (before: {before_count}). Chunks may not have been persisted."
+                    )
+                logger.info(f"Verification passed: collection count increased from {before_count} to {after_count}")
+            except Exception as e:
+                logger.error(f"Index verification failed for document {doc_id}: {e}")
+                raise  # Re-raise to trigger error handling below
+        
         # Update DB record to indexed
         if db is not None and doc_id != -1:
-            doc_record = db.query(Document).filter(Document.id == doc_id).first()
-            if doc_record:
-                doc_record.status = "indexed"
-                doc_record.error_message = None
-                db.commit()
-                logger.info(f"Document {doc_id} indexed successfully ({num} chunks)")
+            try:
+                doc_record = db.query(Document).filter(Document.id == doc_id).first()
+                if doc_record:
+                    doc_record.status = "indexed"
+                    doc_record.error_message = None
+                    db.commit()
+                    logger.info(f"Document {doc_id} indexed successfully ({num} chunks)")
+            except Exception as db_err:
+                logger.warning(f"Could not update document status in DB (non-fatal): {db_err}")
         
     except Exception as e:
         logger.exception(f"Background indexing failed for document {doc_id}: {e}")
         if db is not None and doc_id != -1:
-            doc_record = db.query(Document).filter(Document.id == doc_id).first()
-            if doc_record:
-                doc_record.status = "failed"
-                doc_record.error_message = str(e)
-                db.commit()
+            try:
+                doc_record = db.query(Document).filter(Document.id == doc_id).first()
+                if doc_record:
+                    doc_record.status = "failed"
+                    doc_record.error_message = str(e)
+                    db.commit()
+            except Exception as db_err:
+                logger.warning(f"Could not update document error status in DB (non-fatal): {db_err}")
 
 
 @app.post("/api/upload")
@@ -735,7 +879,11 @@ async def query(
             top10_scores=selected_chunks.get("top10_scores") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
             grounding_gate=selected_chunks.get("grounding_gate") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
             selected_chunks=selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks,
-            context=context_text if payload.debug < 1 else None
+            context=context_text if payload.debug < 1 else None,
+            context_length=len(context_text) if payload.debug >= 1 else None,
+            refused=selected_chunks.get("refused") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
+            refusal_reason=selected_chunks.get("refusal_reason") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
+            failed_check=selected_chunks.get("failed_check") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None
         )
         
         # Emit debug info as SSE event

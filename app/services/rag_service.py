@@ -485,9 +485,10 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str,
     safe_name = source_filename.replace(" ", "_")
     base_id = f"{doc_id}_{safe_name}" if doc_id is not None and doc_id != -1 else safe_name
     ids = [f"{base_id}_{i}" for i in range(len(chunks))]
-    # Store doc_id and filename metadata for filtering
+    # Store doc_id, filename, and tenant_id metadata for filtering
     metadatas = [
         {
+            "tenant_id": tenant_id,
             "source_file": source_filename, 
             "chunk": i,
             "doc_id": doc_id if doc_id is not None else -1,
@@ -541,6 +542,10 @@ async def query_collection(
         debug: Debug level (0=off, 1=detailed diagnostics)
         request_id: Request identifier for tracing (optional)
     """
+    # Normalize doc_ids: empty list behaves the same as None
+    if doc_ids is not None and len(doc_ids) == 0:
+        doc_ids = None
+    
     import uuid
     if not request_id:
         request_id = str(uuid.uuid4())
@@ -1231,5 +1236,9 @@ async def answer_question(
         debug: Debug level (0=off, 1=detailed diagnostics)
         request_id: Request identifier for tracing (optional)
     """
+    # Normalize doc_ids: empty list behaves the same as None
+    if doc_ids is not None and len(doc_ids) == 0:
+        doc_ids = None
+    
     return await query_collection(tenant_id, question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=doc_ids, debug=debug, request_id=request_id)
 
