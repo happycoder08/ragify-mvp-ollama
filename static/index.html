@@ -351,6 +351,47 @@
                         <button class="reindex-btn" onclick="loadDocuments()">↻ Refresh list</button>
                         <button class="reindex-btn" style="color:#b91c1c; border-color:#fecdd3;" onclick="purgeDocuments()">🧹 Clear indexed docs</button>
                         <button class="reindex-btn" style="color:#2563eb; border-color:#bfdbfe;" onclick="checkReadiness()">✔️ Check readiness</button>
+                        <button class="reindex-btn" id="demoResetBtn" style="color:#059669; border-color:#bbf7d0;" onclick="demoReset()">🧨 Demo Reset</button>
+                            // Demo Reset button logic
+                            async function demoReset() {
+                                const btn = document.getElementById('demoResetBtn');
+                                btn.disabled = true;
+                                btn.textContent = 'Resetting...';
+                                try {
+                                    const resp = await fetch('/api/reset', { method: 'POST' });
+                                    if (resp.ok) {
+                                        const result = await resp.json();
+                                        alert(result.message || 'Demo reset complete.');
+                                        // Clear document list and reload
+                                        document.getElementById('documentsList').innerHTML = '<div class="empty-state">No documents yet. Upload your first document below!</div>';
+                                        await loadDocuments();
+                                    } else {
+                                        const msg = await resp.text();
+                                        alert('Demo reset failed: ' + msg);
+                                    }
+                                } catch (e) {
+                                    alert('Demo reset error: ' + e.message);
+                                } finally {
+                                    btn.disabled = false;
+                                    btn.textContent = '🧨 Demo Reset';
+                                }
+                            }
+
+                            // Disable Demo Reset button if not in demo mode
+                            async function checkDemoMode() {
+                                const btn = document.getElementById('demoResetBtn');
+                                try {
+                                    const resp = await fetch('/health');
+                                    if (resp.ok) {
+                                        const data = await resp.json();
+                                        if (data.ragify_mode !== 'demo') {
+                                            btn.disabled = true;
+                                            btn.title = 'Demo Reset only available in demo mode';
+                                        }
+                                    }
+                                } catch {}
+                            }
+                            checkDemoMode();
                     </div>
                 </div>
                 <div class="documents-list" id="documentsList">

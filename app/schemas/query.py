@@ -71,6 +71,8 @@ class DebugInfo(BaseModel):
     refused: Optional[bool] = Field(default=None, description="Whether query was refused by grounding gate")
     refusal_reason: Optional[str] = Field(default=None, description="Reason for refusal if applicable")
     failed_check: Optional[str] = Field(default=None, description="Which grounding check failed")
+    support_score: Optional[float] = Field(default=None, description="Grounding support score (e.g., sum_top3)")
+    gate_evidence_lines_count: Optional[int] = Field(default=None, description="Count of evidence lines considered by gate")
 
 
 class QueryFinalResponse(BaseModel):

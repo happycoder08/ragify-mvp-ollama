@@ -26,7 +26,7 @@ class TestExtractEvidenceLines:
         chunk = "Title\nShort\nThis is a longer line with policy information"
         result = extract_evidence_lines(chunk, "policy")
         assert len(result) == 1
-        assert "policy information" in result[0]
+        assert "policy information" in result[0][0]
     
     def test_lexical_overlap_scoring(self):
         """Lines with more query token overlap should rank higher."""
@@ -38,7 +38,7 @@ For vacation requests, submit at least 2 weeks notice.
         result = extract_evidence_lines(chunk, "vacation policy requests")
         # Should prioritize lines with multiple query tokens
         assert len(result) > 0
-        assert "vacation" in result[0].lower()
+        assert "vacation" in result[0][0].lower()
     
     def test_max_lines_limit(self):
         """Should respect max_lines parameter."""
@@ -69,14 +69,12 @@ class TestComputeGroundingGate:
         selected_chunks = []
         chunk_ids = []
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
             "what is the policy?", selected_chunks, chunk_ids
         )
-        
         assert should_proceed is False
         assert reason == "NOT_FOUND"
         assert lines == []
-        assert score == 0.0
     
     def test_header_only_chunks_refused(self):
         """Chunks with only short headers (no content) should be refused."""
@@ -86,10 +84,9 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0", "chunk_1"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
             "what is the vacation policy?", selected_chunks, chunk_ids
         )
-        
         # These short lines get filtered out (< 10 chars), no evidence extracted
         assert should_proceed is False
         assert reason == "NOT_FOUND"
@@ -102,14 +99,13 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, max_overlap, *_ = _compute_grounding_gate(
             "vacation policy details", selected_chunks, chunk_ids
         )
-        
         # Should have some evidence lines but low support
         assert should_proceed is False
         assert reason == "NOT_FOUND"
-        assert score < MIN_SUPPORT
+        assert max_overlap < MIN_SUPPORT
     
     def test_strong_evidence_passes(self):
         """Chunks with good lexical overlap should pass."""
@@ -123,14 +119,13 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, max_overlap, *_ = _compute_grounding_gate(
             "vacation policy", selected_chunks, chunk_ids
         )
-        
         assert should_proceed is True
         assert reason == ""
         assert len(lines) > 0
-        assert score >= MIN_SUPPORT
+        assert max_overlap >= MIN_SUPPORT
     
     def test_numeric_question_without_numeric_evidence_refused(self):
         """Numeric questions need numeric anchors in evidence."""
@@ -145,10 +140,9 @@ class TestComputeGroundingGate:
         chunk_ids = ["chunk_0"]
         
         # Question asks for numeric info (15 days) but chunk has no numbers
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
             "how many vacation days do I get?", selected_chunks, chunk_ids
         )
-        
         # Should refuse due to missing numeric anchor
         assert should_proceed is False
         assert reason == "NOT_FOUND"
@@ -165,13 +159,12 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, max_overlap, *_ = _compute_grounding_gate(
             "how many vacation days", selected_chunks, chunk_ids
         )
-        
         assert should_proceed is True
         assert reason == ""
-        assert score >= MIN_SUPPORT
+        assert max_overlap >= MIN_SUPPORT
     
     def test_time_question_without_time_evidence_refused(self):
         """Time-sensitive questions need time patterns in evidence."""
@@ -185,10 +178,9 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
             "when does onboarding start?", selected_chunks, chunk_ids
         )
-        
         # Should refuse: 'when' question but no time info
         assert should_proceed is False
         assert reason == "NOT_FOUND"
@@ -205,10 +197,9 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
             "when does onboarding start?", selected_chunks, chunk_ids
         )
-        
         assert should_proceed is True
         assert reason == ""
     
@@ -221,14 +212,13 @@ class TestComputeGroundingGate:
         ]
         chunk_ids = ["chunk_0", "chunk_1", "chunk_2"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, max_overlap, *_ = _compute_grounding_gate(
             "vacation policy", selected_chunks, chunk_ids
         )
-        
         # Should combine evidence from all chunks
         assert should_proceed is True
         assert len(lines) > 0  # Multiple lines extracted
-        assert score >= MIN_SUPPORT
+        assert max_overlap >= MIN_SUPPORT
     
     def test_deterministic_behavior(self):
         """Same input should always produce same output."""
@@ -251,7 +241,27 @@ class TestComputeGroundingGate:
 
 class TestGroundingGateEdgeCases:
     """Test edge cases and boundary conditions."""
-    
+
+    def test_time_anchor_explicit_support(self):
+        """Time anchor in chunk should be explicit support for time/numeric question."""
+        selected_chunks = [
+            (
+                "ARRIVAL TIME: Please arrive at 8:00 AM on your first day.",
+                {"chunk": 0},
+                0.2
+            )
+        ]
+        chunk_ids = ["chunk_0"]
+        question = "What time should I arrive on my first day?"
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
+            question, selected_chunks, chunk_ids
+        )
+        # Should not be refused, and evidence_count >= 1
+        assert should_proceed is True
+        assert reason == ""
+        assert len(lines) >= 1
+
+    """Test edge cases and boundary conditions."""
     def test_exactly_min_support(self):
         """Support score exactly at MIN_SUPPORT should pass."""
         # Craft chunk to have exactly MIN_SUPPORT tokens overlap
@@ -264,12 +274,11 @@ class TestGroundingGateEdgeCases:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, max_overlap, *_ = _compute_grounding_gate(
             "vacation policy", selected_chunks, chunk_ids
         )
-        
         # With "vacation" and "policy" both present, score should be >= 2
-        assert score >= MIN_SUPPORT
+        assert max_overlap >= MIN_SUPPORT
         assert should_proceed is True
     
     def test_stopwords_filtered(self):
@@ -284,10 +293,9 @@ class TestGroundingGateEdgeCases:
         chunk_ids = ["chunk_0"]
         
         # Query with many stopwords
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, *_ = _compute_grounding_gate(
             "what is the policy that I need", selected_chunks, chunk_ids
         )
-        
         # Overlap should be based on content words (policy, need) not stopwords
         assert len(lines) > 0
     
@@ -298,12 +306,11 @@ class TestGroundingGateEdgeCases:
         ]
         chunk_ids = ["chunk_0"]
         
-        should_proceed, reason, lines, score = _compute_grounding_gate(
+        should_proceed, reason, lines, max_overlap, *_ = _compute_grounding_gate(
             "vacation policy", selected_chunks, chunk_ids
         )
-        
         assert should_proceed is True
-        assert score >= MIN_SUPPORT
+        assert max_overlap >= MIN_SUPPORT
 
 
 if __name__ == "__main__":

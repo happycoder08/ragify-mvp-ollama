@@ -1,3 +1,83 @@
+from fastapi import Response
+from fastapi import FastAPI
+
+# Instantiate FastAPI app at the top
+app = FastAPI(title="RAGify AI – Ollama RAG Backend (Multi-Tenant)")
+
+# --- DEMO VERIFICATION ENDPOINT ---
+@app.post("/api/demo-verify")
+async def api_demo_verify():
+    import os
+    from app.config import RAGIFY_MODE
+    if os.getenv("RAGIFY_MODE", "").lower() != "demo" and RAGIFY_MODE != "demo":
+        return Response(content="Demo verification only available in demo mode", status_code=403)
+    from app.services.rag_service import query_collection
+    demo_queries = [
+        "What time should I arrive on my first day?",
+        "Where is the main reception?",
+        "What documents do I need to bring?",
+        "How do I set up my email signature?"
+    ]
+    results = []
+    for q in demo_queries:
+        try:
+            # Run query with debug=1, no streaming
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="default",
+                question=q,
+                top_k=4,
+                mode="fast",
+                conversation_history=None,
+                doc_ids=None,
+                debug=1,
+                request_id=f"demo-verify-{q[:16].replace(' ','_')}"
+            )
+            # Consume generator fully (should be a single answer)
+            if hasattr(gen, '__anext__'):
+                answer = ""
+                try:
+                    async for chunk in gen:
+                        answer += chunk
+                except Exception:
+                    pass
+            evidence_count = len(evidence) if evidence else 0
+            passed = evidence_count >= 1
+            reason = None if passed else f"No evidence found for: '{q}'"
+            results.append({
+                "question": q,
+                "evidence_count": evidence_count,
+                "passed": passed,
+                "reason": reason,
+                "sources": sources,
+                "debug_info": debug_info
+            })
+        except Exception as e:
+            results.append({
+                "question": q,
+                "evidence_count": 0,
+                "passed": False,
+                "reason": f"Exception: {e}"
+            })
+    all_passed = all(r["passed"] for r in results)
+    return {
+        "overall_passed": all_passed,
+        "results": results
+    }
+# --- DEMO RESET ENDPOINT ---
+from fastapi import Response
+@app.post("/api/reset")
+async def api_demo_reset():
+    from app.config import RAGIFY_MODE
+    import os
+    if os.getenv("RAGIFY_MODE", "").lower() != "demo" and RAGIFY_MODE != "demo":
+        return Response(content="Demo reset only available in demo mode", status_code=403)
+    try:
+        # Reset vector store and reindex demo doc
+        from app.services.rag_service import _demo_mode_startup
+        _demo_mode_startup()
+        return {"status": "ok", "message": "Demo reset: vector store cleared and demo document reindexed."}
+    except Exception as e:
+        return Response(content=f"Demo reset failed: {e}", status_code=500)
 from typing import List, Optional
 import uuid
 import contextvars
@@ -297,6 +377,14 @@ async def get_debug_info(
         except Exception as e:
             logger.debug(f"Could not query database: {e}")
     
+    # Import grounding gate thresholds
+    from app.services import grounding
+    grounding_gate_thresholds = {
+        "MIN_SUPPORT": grounding.MIN_SUPPORT,
+        "MIN_TOTAL_SUPPORT": grounding.MIN_TOTAL_SUPPORT,
+        "MAX_EVIDENCE_LINES_TOTAL": grounding.MAX_EVIDENCE_LINES_TOTAL,
+        "MAX_EVIDENCE_LINES_PER_CHUNK": grounding.MAX_EVIDENCE_LINES_PER_CHUNK,
+    }
     return {
         "tenant_id": tenant_id,
         "llm_provider": llm_provider_name,
@@ -307,7 +395,10 @@ async def get_debug_info(
         "collection_exists": collection_exists,
         "db_enabled": db_enabled,
         "documents_count": documents_count,
-        "last_documents": last_documents
+        "last_documents": last_documents,
+        "grounding_gate": {
+            "thresholds": grounding_gate_thresholds
+        }
     }
 
 
@@ -883,7 +974,9 @@ async def query(
             context_length=len(context_text) if payload.debug >= 1 else None,
             refused=selected_chunks.get("refused") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
             refusal_reason=selected_chunks.get("refusal_reason") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            failed_check=selected_chunks.get("failed_check") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None
+            failed_check=selected_chunks.get("failed_check") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
+            support_score=selected_chunks.get("support_score") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
+            gate_evidence_lines_count=selected_chunks.get("gate_evidence_lines_count") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None
         )
         
         # Emit debug info as SSE event

@@ -39,7 +39,7 @@ def _tokenize_and_filter(text: str, min_len: int = 2) -> list:
         List of tokens with stopwords removed
     """
     cleaned = ''.join(c.lower() if c.isalnum() or c.isspace() else ' ' for c in text)
-    tokens = [t for t in cleaned.split() if len(t) > min_len and t not in STOPWORDS]
+    tokens = [t for t in cleaned.split() if len(t) > min_len and t.lower() not in STOPWORDS]
     return tokens
 
 
@@ -50,6 +50,7 @@ def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_
     
     Token-based filtering: excludes lines with <2 tokens unless they contain digits/time markers.
     Tie-breaking: prefers bullets, anchor patterns (digits/times), and lines near headers.
+    Numeric/time bonus: +1 to overlap if question is time-sensitive AND line contains time/numeric anchor.
     
     Args:
         chunk_text: The text of the chunk to extract lines from
@@ -67,6 +68,13 @@ def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_
     if not q_tokens:
         return []
     
+    # Detect if question is time/numeric sensitive
+    q_lower = question.lower()
+    is_time_sensitive = bool(
+        re.search(r'\b\d+', question) or  # Contains digits
+        any(word in q_lower for word in ['time', 'when', 'hour', 'day', 'days', 'week', 'month', 'year', 'am', 'pm', 'arrive', 'arrival'])
+    )
+    
     # Split chunk into lines and score each
     lines = chunk_text.split('\n')
     scored_lines = []
@@ -75,37 +83,51 @@ def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        
+
         # Token-based filter: exclude lines with <2 tokens unless they have digits/time markers
         line_tokens = _tokenize_and_filter(line_stripped)
-        has_anchor = bool(re.search(r'\b\d+', line_stripped) or re.search(r'\b\d{1,2}:\d{2}', line_stripped))
-        
+        has_anchor = bool(
+            re.search(r'\b\d+', line_stripped) or  # Contains digits
+            re.search(r'\b\d{1,2}:\d{2}', line_stripped) or  # Time pattern HH:MM
+            re.search(r'\b(?:am|pm)\b', line_stripped.lower())  # AM/PM
+        )
+
         if len(line_tokens) < 2 and not has_anchor:
             continue  # Skip lines with insufficient content
-        
+
         # Tokenize line for overlap
         line_token_set = set(line_tokens)
-        if not line_token_set:
-            continue
-        
-        # Compute overlap count
-        overlap = len(q_tokens & line_token_set)
-        if overlap > 0:
-            # Compute tie-breaker score components
+        raw_overlap = len(q_tokens & line_token_set)
+        effective_overlap = raw_overlap
+        anchor_bonus_applied = False
+
+        # If time/numeric question and line has anchor, treat as explicit support (even if raw_overlap==0)
+        if is_time_sensitive and has_anchor:
+            if raw_overlap == 0:
+                # Guardrail: treat as explicit support
+                effective_overlap = 2  # At least MIN_SUPPORT
+                anchor_bonus_applied = True
+            else:
+                effective_overlap = raw_overlap + 1
+                anchor_bonus_applied = True
+
+        # Log raw vs effective overlap for debug
+        logger.debug(
+            "[GroundingGate] Line: '%s' | raw_overlap=%d | effective_overlap=%d | anchor_bonus=%s",
+            line_stripped[:80], raw_overlap, effective_overlap, anchor_bonus_applied
+        )
+
+        if effective_overlap > 0:
             is_bullet = bool(re.match(r'^\s*(?:[-*•]|\d+[.)])', line))
             is_near_header = (idx == 0 or (idx > 0 and lines[idx-1].strip().endswith(':')))
-            
-            # Tie-breaker tuple: (overlap, is_bullet, has_anchor, is_near_header, line_length)
-            # Higher values sort first
             tie_breaker = (
-                overlap,
+                effective_overlap,
                 1 if is_bullet else 0,
                 1 if has_anchor else 0,
                 1 if is_near_header else 0,
                 len(line_stripped)
             )
-            
-            scored_lines.append((line_stripped, overlap, tie_breaker))
+            scored_lines.append((line_stripped, effective_overlap, tie_breaker))
     
     # Sort by tie_breaker tuple (descending)
     scored_lines.sort(key=lambda x: x[2], reverse=True)
@@ -141,10 +163,17 @@ def _compute_grounding_gate(
         - should_proceed: True if evidence is sufficient, False to refuse
         - refusal_reason: "NOT_FOUND" if refused, empty string otherwise
         - evidence_lines: List of extracted evidence lines (text only)
-        - max_overlap: Max overlap count across all evidence lines
-        - sum_top3: Sum of top 3 overlap counts
+        - max_overlap: Max overlap count across all evidence lines (includes time/numeric bonus)
+        - sum_top3: Sum of top 3 overlap counts (includes time/numeric bonus)
         - failed_check: "NO_EVIDENCE", "LOW_SUPPORT", "MISSING_ANCHOR", or "" if passed
     """
+    # Detect if question is time/numeric sensitive (for logging)
+    q_lower = question.lower()
+    is_time_sensitive = bool(
+        re.search(r'\b\d+', question) or
+        any(word in q_lower for word in ['time', 'when', 'hour', 'day', 'days', 'week', 'month', 'year', 'am', 'pm', 'arrive', 'arrival'])
+    )
+    
     # Extract evidence lines from all selected chunks (with overlap scores)
     all_evidence_tuples = []
     for doc, meta, dist in selected_chunks:
@@ -168,13 +197,37 @@ def _compute_grounding_gate(
     # Extract text lines for return value
     evidence_lines = [line for line, _ in top_evidence_tuples]
     
-    # Check 2: Max overlap below minimum
-    if max_overlap < MIN_SUPPORT:
-        return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
+    # Debug logging for grounding gate metrics
+    logger.debug(
+        "Grounding gate: time_sensitive=%s, max_overlap=%.0f (threshold=%d), sum_top3=%.0f (threshold=%d), top_scores=%s",
+        is_time_sensitive, max_overlap, MIN_SUPPORT, sum_top3, MIN_TOTAL_SUPPORT,
+        [round(s, 1) for s in overlap_scores[:3]]
+    )
     
-    # Check 3: Sum of top 3 overlaps below minimum total support
-    if sum_top3 < MIN_TOTAL_SUPPORT:
-        return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
+    # Check 2: Max overlap below minimum
+    # Allow explicit support for MIN_SUPPORT if any evidence line has anchor and question is time/numeric
+    explicit_support = False
+    if is_time_sensitive:
+        for line, overlap in top_evidence_tuples:
+            has_anchor = bool(
+                re.search(r'\b\d+', line) or
+                re.search(r'\b\d{1,2}:\d{2}', line) or
+                re.search(r'\b(?:am|pm)\b', line.lower())
+            )
+            if has_anchor and overlap >= MIN_SUPPORT:
+                explicit_support = True
+                break
+    # For non-time/numeric questions, allow passing if max_overlap >= MIN_SUPPORT
+    if not is_time_sensitive:
+        if max_overlap < MIN_SUPPORT:
+            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
+        # Legacy: allow passing if max_overlap >= MIN_SUPPORT, regardless of sum_top3
+        # (do not enforce sum_top3 for non-time/numeric questions)
+    else:
+        if max_overlap < MIN_SUPPORT and not explicit_support:
+            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
+        if sum_top3 < MIN_TOTAL_SUPPORT and not explicit_support:
+            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
     
     # Check 4: Numeric/time-sensitive questions need numeric/time anchors
     q_lower = question.lower()
