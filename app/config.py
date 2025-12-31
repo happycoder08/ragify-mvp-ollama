@@ -175,7 +175,7 @@ ENABLE_TIMING_LOGS = CONFIG["enable_timing_logs"]
 # ===========================
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VECTOR_DIR = os.path.join(BASE_DIR, "vectorstore")
+VECTOR_DIR = os.getenv("VECTOR_DIR", os.path.join(BASE_DIR, "vectorstore"))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
 os.makedirs(VECTOR_DIR, exist_ok=True)

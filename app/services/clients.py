@@ -52,6 +52,7 @@ def get_chroma_client():
     return chroma_client
 
 
+
 def get_http_client():
     """Get the initialized async HTTP client."""
     if http_client is None or http_client.is_closed:
@@ -59,19 +60,36 @@ def get_http_client():
     return http_client
 
 
+async def close_http_client():
+    """Close the global async HTTP client and set to None."""
+    global http_client
+    if http_client and not http_client.is_closed:
+        await http_client.aclose()
+    http_client = None
+
+
 async def shutdown_clients():
     """Cleanup and close all clients on shutdown."""
     global http_client, chroma_client
-    
+
     if http_client and not http_client.is_closed:
         logger.info("Closing HTTP client...")
         await http_client.aclose()
         logger.info("HTTP client closed")
-    
+    http_client = None
+
+    # ✅ In CI/test mode, don't persist (avoids logging on closed streams)
+    is_ci_mode = (
+        os.getenv("CI", "").lower() in ("true", "1", "yes") or
+        os.getenv("APP_MODE", "").lower() == "ci"
+    )
+
     if chroma_client:
-        logger.info("Persisting ChromaDB...")
-        try:
-            chroma_client.persist()
-            logger.info("ChromaDB persisted successfully")
-        except Exception as e:
-            logger.warning("Failed to persist ChromaDB: %s", e)
+        if not is_ci_mode:
+            logger.info("Persisting ChromaDB...")
+            try:
+                chroma_client.persist()
+                logger.info("ChromaDB persisted successfully")
+            except Exception as e:
+                logger.warning("Failed to persist ChromaDB: %s", e)
+        chroma_client = None

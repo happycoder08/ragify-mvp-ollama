@@ -1,5 +1,8 @@
 from fastapi import Response
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+import logging
 
 # Instantiate FastAPI app at the top
 app = FastAPI(title="RAGify AI – Ollama RAG Backend (Multi-Tenant)")
@@ -89,8 +92,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(message)s',
+    handlers=[
+        logging.FileHandler("backend.logs", mode="a", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
 import time
 import json
+import asyncio
 
 from app.services import ingestion
 from app.services import rag_service
@@ -342,7 +354,7 @@ async def get_debug_info(
     
     try:
         from app.services import rag_service
-        collection = rag_service._get_collection(tenant_id)
+        collection = await rag_service.get_collection_async(tenant_id)
         collection_count = collection.count()
         collection_exists = True
     except Exception as e:
@@ -669,8 +681,8 @@ async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str,
         # Capture collection count before indexing for verification
         before_count = 0
         try:
-            from app.services.rag_service import _get_collection
-            collection = _get_collection(tenant_id)
+            from app.services.rag_service import get_collection_async
+            collection = await get_collection_async(tenant_id)
             before_count = collection.count()
         except Exception as e:
             logger.warning(f"Could not get collection count before indexing: {e}")
@@ -681,10 +693,9 @@ async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str,
         # Verify indexing actually worked by checking collection count
         if num > 0:
             try:
-                from app.services.rag_service import _get_collection
-                collection = _get_collection(tenant_id)
+                from app.services.rag_service import get_collection_async
+                collection = await get_collection_async(tenant_id)
                 after_count = collection.count()
-                
                 if after_count == 0 or after_count <= before_count:
                     raise Exception(
                         f"Index verification failed: Chroma count is {after_count} after indexing "
@@ -935,94 +946,162 @@ async def query(
     
     # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
     query_start = time.time()
-    answer_gen, sources, evidence, context_text, selected_chunks = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug, request_id=request_id)
+    answer_gen, sources, evidence, context_text, debug_payload = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug, request_id=request_id)
+    # Temporary: log debug keys
+    if isinstance(debug_payload, dict):
+        logger.info(f"DEBUG_KEYS request_id={debug_payload.get('request_id')} keys={list(debug_payload.keys())}")
     
     # Extract collection metadata for debug info
     collection_name = f"documents_{tenant_id}"
     collection_count = None
     if payload.debug >= 1:
         try:
-            from app.services.rag_service import _get_collection
-            collection = _get_collection(tenant_id)
+            from app.services.rag_service import get_collection_async
+            collection = await get_collection_async(tenant_id)
             collection_count = collection.count()
+            collection_name = collection.name if hasattr(collection, 'name') else f"documents_{tenant_id}"
         except Exception as e:
             logger.warning(f"Failed to get collection count: {e}")
             collection_count = None
     
-    # Stream the answer tokens back to client
+
+    # Build debug info using canonical schema
+    debug_info_dict = dict(
+        evidence_count=len(evidence),
+        sources_count=len(sources),
+        retrieved_count=debug_payload.get("retrieved_count") if isinstance(debug_payload, dict) else None,
+        selected_count=debug_payload.get("selected_count") if isinstance(debug_payload, dict) else (len(debug_payload) if isinstance(debug_payload, list) else None),
+        request_id=request_id if payload.debug >= 1 else None,
+        tenant_id=tenant_id if payload.debug >= 1 else None,
+        collection_name=collection_name if payload.debug >= 1 else None,
+        collection_count=collection_count if payload.debug >= 1 else None,
+        doc_ids_filter=payload.doc_ids if payload.debug >= 1 and payload.doc_ids else None,
+        top10_scores=debug_payload.get("top10_scores") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
+        grounding_gate=debug_payload.get("grounding_gate") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
+        selected_chunks=(
+            debug_payload.get("selected_chunks")
+            if isinstance(debug_payload, dict) and debug_payload.get("selected_chunks") is not None
+            else debug_payload.get("selected")
+            if isinstance(debug_payload, dict) and debug_payload.get("selected") is not None
+            else debug_payload.get("chunks", [])
+        ) if isinstance(debug_payload, dict) else debug_payload,
+        context=context_text if payload.debug < 1 else None,
+        context_length=len(context_text) if payload.debug >= 1 else None,
+        refused=debug_payload.get("refused") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
+        refusal_reason=debug_payload.get("refusal_reason") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
+        failed_check=debug_payload.get("failed_check") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
+        support_score=debug_payload.get("support_score") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
+        gate_evidence_lines_count=debug_payload.get("gate_evidence_lines_count") if isinstance(debug_payload, dict) and payload.debug >= 1 else None
+    )
+    # Always include retrieved_chunks_top20 if debug enabled
+    if payload.debug >= 1:
+        if isinstance(debug_payload, dict) and "retrieved_chunks_top20" in debug_payload:
+            debug_info_dict["retrieved_chunks_top20"] = debug_payload["retrieved_chunks_top20"]
+        else:
+            debug_info_dict["retrieved_chunks_top20"] = []
+    debug_info = DebugInfo(**debug_info_dict)
+
+    # Fix: define selected_chunks for use below
+    selected_chunks = debug_info.selected_chunks
+
+    # If stream is False, return a normal JSON response
+    if hasattr(payload, "stream") and payload.stream is False:
+        # GROUNDING ENFORCEMENT: If no evidence, no context, or canonical refusal message, return standardized refusal
+        refusal_answer = "The document does not specify this."
+        is_refused = (
+            (isinstance(selected_chunks, dict) and selected_chunks.get("refused", False)) or
+            not evidence or not context_text.strip()
+        )
+        refusal_reason = (
+            selected_chunks.get("refusal_reason", "NOT_FOUND") if isinstance(selected_chunks, dict) else "NOT_FOUND"
+        )
+        # Collect the full answer from the generator if needed
+        full_answer = ""
+        if hasattr(answer_gen, '__aiter__'):
+            async for chunk in answer_gen:
+                full_answer += chunk
+        elif hasattr(answer_gen, '__iter__'):
+            for chunk in answer_gen:
+                full_answer += chunk
+        else:
+            full_answer = str(answer_gen)
+
+        # If the answer is the canonical refusal message, or evidence/context is empty, set refused True
+        if full_answer.strip() == refusal_answer or is_refused:
+            final_response = QueryFinalResponse(
+                answer=refusal_answer,
+                refused=True,
+                refusal_reason=refusal_reason,
+                evidence=[],
+                sources=[],
+                debug_info=debug_info if payload.debug >= 1 else None
+            )
+            return JSONResponse(content=final_response.dict(exclude_none=True))
+
+        # Otherwise, build normal response
+        source_items = []
+        for src in (sources or []):
+            if "#" in src:
+                filename, chunk_id = src.split("#", 1)
+                source_items.append(SourceItem(
+                    doc_id=None,
+                    filename=filename,
+                    chunk_id=chunk_id
+                ))
+            else:
+                source_items.append(SourceItem(
+                    doc_id=None,
+                    filename=src,
+                    chunk_id=None
+                ))
+        final_response = QueryFinalResponse(
+            answer=full_answer,
+            refused=False,
+            refusal_reason=None,
+            evidence=evidence,
+            sources=source_items,
+            debug_info={
+                **debug_info.dict(exclude_none=True),
+                "retrieved_chunks_top20": selected_chunks.get("retrieved_chunks_top20") if isinstance(selected_chunks, dict) else []
+            } if payload.debug >= 1 else None
+        )
+        return JSONResponse(content=final_response.dict(exclude_none=True))
+
+    # Otherwise, stream as before
     async def stream_response():
         first_token = True
         token_count = 0
         full_answer = ""  # Collect full answer for saving to conversation
         logger.info("Starting to stream response for request_id=%s (evidence_count=%d)", request_id, len(evidence))
-        
-        # Build debug info using canonical schema
-        debug_info = DebugInfo(
-            evidence_count=len(evidence),
-            sources_count=len(sources),
-            retrieved_count=selected_chunks.get("retrieved_count") if isinstance(selected_chunks, dict) else None,
-            selected_count=selected_chunks.get("selected_count") if isinstance(selected_chunks, dict) else (len(selected_chunks) if isinstance(selected_chunks, list) else None),
-            request_id=request_id if payload.debug >= 1 else None,
-            tenant_id=tenant_id if payload.debug >= 1 else None,
-            collection_name=collection_name if payload.debug >= 1 else None,
-            collection_count=collection_count if payload.debug >= 1 else None,
-            doc_ids_filter=payload.doc_ids if payload.debug >= 1 and payload.doc_ids else None,
-            top10_scores=selected_chunks.get("top10_scores") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            grounding_gate=selected_chunks.get("grounding_gate") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            selected_chunks=selected_chunks.get("chunks", []) if isinstance(selected_chunks, dict) else selected_chunks,
-            context=context_text if payload.debug < 1 else None,
-            context_length=len(context_text) if payload.debug >= 1 else None,
-            refused=selected_chunks.get("refused") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            refusal_reason=selected_chunks.get("refusal_reason") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            failed_check=selected_chunks.get("failed_check") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            support_score=selected_chunks.get("support_score") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None,
-            gate_evidence_lines_count=selected_chunks.get("gate_evidence_lines_count") if isinstance(selected_chunks, dict) and payload.debug >= 1 else None
-        )
-        
-        # Emit debug info as SSE event
         yield f"event: debug\n"
         yield f"data: {json.dumps(debug_info.dict(exclude_none=True))}\n\n"
 
-        # GROUNDING ENFORCEMENT: If no evidence was found, return standardized refusal
-        # Check if the query was refused (grounding gate rejection)
         is_refused = isinstance(selected_chunks, dict) and selected_chunks.get("refused", False)
         refusal_reason = selected_chunks.get("refusal_reason", "NOT_FOUND") if isinstance(selected_chunks, dict) else "NOT_FOUND"
-        
-        if is_refused or not evidence or not context_text.strip():
-            # Use canonical refusal message and schema
-            refusal_answer = "The document does not specify this."
-            logger.warning(
-                "[%s] Query refused or no evidence found (refused=%s, reason=%s). Question: %s..., evidence_count=%d, context_length=%d",
-                request_id,
-                is_refused,
-                refusal_reason,
-                payload.question[:80],
-                len(evidence),
-                len(context_text) if context_text else 0
-            )
-            
-            # Save refusal to conversation with metadata
-            if conversation and db:
-                try:
-                    refusal_metadata = json.dumps({
-                        "refused": True,
-                        "refusal_reason": refusal_reason,
-                        "failed_check": selected_chunks.get("failed_check") if isinstance(selected_chunks, dict) else None
-                    })
-                    assistant_msg = Message(
-                        conversation_id=payload.conversation_id,
-                        role="assistant",
-                        content=refusal_answer,
-                        sources=refusal_metadata
-                    )
-                    db.add(assistant_msg)
-                    conversation.updated_at = func.now()
-                    db.commit()
-                    logger.info("[%s] Saved refusal to conversation %d", request_id, payload.conversation_id)
-                except Exception as e:
-                    logger.error("[%s] Failed to save refusal: %s", request_id, e)
-            
-            # Build canonical refusal response
+        refusal_answer = "The document does not specify this."
+        # Collect the full answer from the generator if needed
+        async for chunk in answer_gen:
+            if first_token:
+                log_timing("time_to_first_token", time.time() - query_start, tenant_id, question_length=len(payload.question))
+                logger.info("First token received for request_id=%s", request_id)
+                first_token = False
+            token_count += 1
+            full_answer += chunk
+            logger.debug("Yielding token %d (len=%d) for request_id=%s", token_count, len(chunk), request_id)
+            yield f"event: token\n"
+            yield f"data: {json.dumps({'t': chunk})}\n\n"
+
+        # Enforce contract before emitting final
+        contract_violation = False
+        if (
+            is_refused or
+            not evidence or
+            not context_text.strip() or
+            full_answer.strip() == refusal_answer
+        ):
+            contract_violation = True
+        if contract_violation:
+            logger.warning("[stream_response] Coercing to refusal: contract violation (refused=%s, evidence=%d, context empty=%s, answer=refusal) for request_id=%s", is_refused, len(evidence), not context_text.strip(), request_id)
             final_response = QueryFinalResponse(
                 answer=refusal_answer,
                 refused=True,
@@ -1035,65 +1114,12 @@ async def query(
             yield f"data: {json.dumps(final_response.dict(exclude_none=True))}\n\n"
             return
 
-        # Otherwise, stream tokens and finish with structured schema
-        async for chunk in answer_gen:
-            if first_token:
-                log_timing("time_to_first_token", time.time() - query_start, tenant_id, question_length=len(payload.question))
-                logger.info("First token received for request_id=%s", request_id)
-                first_token = False
-            token_count += 1
-            full_answer += chunk  # Collect for saving
-            logger.debug("Yielding token %d (len=%d) for request_id=%s", token_count, len(chunk), request_id)
-            yield f"event: token\n"
-            yield f"data: {json.dumps({'t': chunk})}\n\n"
-
-        logger.info("Finished streaming %d tokens for request_id=%s", token_count, request_id)
-        total_latency = time.time() - query_start
-        log_timing("query_complete", total_latency, tenant_id, 
-                   question_length=len(payload.question), 
-                   num_sources=len(sources),
-                   tokens_generated=token_count,
-                   request_id=request_id)
-        logger.info("[%s] Total query latency: %.2f seconds", request_id, total_latency)
-
-        # Save assistant response to conversation
-        if conversation and db:
-            try:
-                assistant_msg = Message(
-                    conversation_id=payload.conversation_id,
-                    role="assistant",
-                    content=full_answer,
-                    sources=json.dumps(sources) if sources else None
-                )
-                db.add(assistant_msg)
-                conversation.updated_at = func.now()
-                db.commit()
-                logger.info("Saved assistant response to conversation %d", payload.conversation_id)
-            except Exception as e:
-                logger.error("Failed to save assistant response: %s", e)
-                # Don't fail the request if saving fails
-
-        # Build canonical final response with proper schema
-        # Convert evidence strings to EvidenceItem objects
-        evidence_items = []
-        for i, ev_text in enumerate(evidence):
-            # Try to extract chunk_id from sources if available
-            chunk_id = sources[i].split("#")[1] if i < len(sources) and "#" in sources[i] else f"chunk_{i}"
-            evidence_items.append(EvidenceItem(
-                snippet=ev_text,
-                chunk_id=chunk_id,
-                heading=None,  # Could be extracted from chunk metadata if available
-                doc_id=None    # Could be extracted from chunk_id if format is known
-            ))
-        
-        # Convert sources to SourceItem objects
         source_items = []
         for src in (sources or []):
-            # Parse source format: "filename#chunk_id"
             if "#" in src:
                 filename, chunk_id = src.split("#", 1)
                 source_items.append(SourceItem(
-                    doc_id=None,  # Could extract from chunk_id if format is "docid_filename_idx"
+                    doc_id=None,
                     filename=filename,
                     chunk_id=chunk_id
                 ))
@@ -1103,21 +1129,18 @@ async def query(
                     filename=src,
                     chunk_id=None
                 ))
-        
-        # Build final response using canonical schema
         final_response = QueryFinalResponse(
             answer=full_answer,
             refused=False,
             refusal_reason=None,
-            evidence=evidence_items,
+            evidence=evidence,
             sources=source_items,
             debug_info=debug_info if payload.debug >= 1 else None
         )
-        
         logger.info("Sending final structured response for request_id=%s", request_id)
         yield f"event: final\n"
         yield f"data: {json.dumps(final_response.dict(exclude_none=True))}\n\n"
-    
+
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 
 
@@ -1166,7 +1189,7 @@ async def list_documents(
     # Also get documents from ChromaDB (for documents without DB records)
     try:
         from app.services import rag_service
-        chroma_docs = rag_service.get_indexed_documents(tenant_id)
+        chroma_docs = await rag_service.get_indexed_documents(tenant_id)
         
         # Add ChromaDB documents that aren't already in the list
         db_filenames = {doc["filename"] for doc in documents}

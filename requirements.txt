@@ -11,3 +11,5 @@ sqlalchemy
 psycopg2-binary
 PyJWT
 bcrypt
+
+pytest-asyncio

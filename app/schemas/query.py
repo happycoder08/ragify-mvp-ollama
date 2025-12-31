@@ -16,6 +16,7 @@ class QueryRequest(BaseModel):
     conversation_id: Optional[int] = Field(default=None, description="Optional conversation context")
     doc_ids: Optional[List[int]] = Field(default=None, description="Optional document IDs to filter search scope")
     debug: int = Field(default=0, ge=0, le=2, description="Debug level: 0=off, 1=detailed, 2=verbose")
+    stream: bool = Field(default=True, description="If true, stream response as SSE; if false, return JSON response.")
 
 
 class EvidenceItem(BaseModel):
@@ -66,6 +67,7 @@ class DebugInfo(BaseModel):
     top10_scores: Optional[List] = Field(default=None, description="Top 10 retrieval scores")
     grounding_gate: Optional[dict] = Field(default=None, description="Grounding validation details")
     selected_chunks: Optional[List] = Field(default=None, description="Selected chunk metadata")
+    retrieved_chunks_top20: Optional[List] = Field(default=None, description="Top 20 retrieved chunks before rerank (metadata only)")
     context: Optional[str] = Field(default=None, description="Full context sent to LLM")
     context_length: Optional[int] = Field(default=None, description="Length of context text in characters")
     refused: Optional[bool] = Field(default=None, description="Whether query was refused by grounding gate")
@@ -94,22 +96,33 @@ class QueryFinalResponse(BaseModel):
     @root_validator
     def validate_response_consistency(cls, values):
         """Validate response consistency: refusal message, evidence, and sources."""
+        import logging
         refused = values.get('refused')
         answer = values.get('answer')
         evidence = values.get('evidence', [])
         sources = values.get('sources', [])
-        
+        refusal_answer = "The document does not specify this."
+
+        # If answer is the canonical refusal message, refused must be True
+        if answer == refusal_answer and not refused:
+            logging.warning("[QueryFinalResponse] Coercing to refusal: answer is refusal message but refused==False.")
+            values['refused'] = True
+            values['evidence'] = []
+            values['sources'] = []
+            return values
+
         # If refused, must use canonical message
-        if refused and answer != "The document does not specify this.":
+        if refused and answer != refusal_answer:
             raise ValueError("Refused queries must use canonical refusal message: 'The document does not specify this.'")
-        
-        # If not refused, must have evidence and sources
+
+        # If not refused, must have evidence and sources and not be the refusal message
         if not refused:
-            if len(evidence) == 0:
-                raise ValueError("Non-refused queries must have at least 1 evidence item")
-            if len(sources) == 0:
-                raise ValueError("Non-refused queries must have at least 1 source")
-        
+            if len(evidence) == 0 or len(sources) == 0 or answer == refusal_answer:
+                logging.warning("[QueryFinalResponse] Coercing to refusal: refused==False but evidence/sources empty or answer is refusal message.")
+                values['refused'] = True
+                values['answer'] = refusal_answer
+                values['evidence'] = []
+                values['sources'] = []
         return values
     
     class Config:

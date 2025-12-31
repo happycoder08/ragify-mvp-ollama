@@ -1,0 +1,184 @@
+{
+  "evidence_count": 1,
+  "sources_count": 1,
+  "selected_count": 1,
+  "request_id": "ee442951-de1e-4180-aace-f221ffdffad1",
+  "tenant_id": "default",
+  "collection_name": "documents_default__nomic-embed-text__768",
+  "collection_count": 58,
+  "selected_chunks": [
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_30",
+      "dist": 0.35646289587020874,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "HEALTH INSURANCE",
+      "contains_clock_time": false,
+      "lexical_score": 0.0,
+      "final_score": 0.0,
+      "why_selected": []
+    }
+  ],
+  "retrieved_chunks_top20": [
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_30",
+      "dist": 0.35646289587020874,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "HEALTH INSURANCE",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_8",
+      "dist": 0.3837575316429138,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "AFTERNOON (1:00 PM - 5:00 PM)",
+      "contains_clock_time": true,
+      "lexical_score": 0.5
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_11",
+      "dist": 0.3964223265647888,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "WHAT TO ASK YOUR MANAGER:",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_42",
+      "dist": 0.4056375026702881,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "1. CUSTOMER FIRST",
+      "contains_clock_time": false,
+      "lexical_score": 0.2
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_9",
+      "dist": 0.41329753398895264,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "5. TEAM LUNCH (12:00 PM - 1:00 PM)",
+      "contains_clock_time": true,
+      "lexical_score": 0.5
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_20",
+      "dist": 0.42664575576782227,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "HYBRID SCHEDULE",
+      "contains_clock_time": true,
+      "lexical_score": 0.7
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_1",
+      "dist": 0.4286918044090271,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "WELCOME TO TECHCORP!",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_12",
+      "dist": 0.4298741817474365,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "7. WORKSPACE SETUP (2:00 PM - 3:00 PM)",
+      "contains_clock_time": true,
+      "lexical_score": 0.5
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_3",
+      "dist": 0.4352726936340332,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "MORNING (8:00 AM - 12:00 PM)",
+      "contains_clock_time": true,
+      "lexical_score": 0.5
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_27",
+      "dist": 0.43540269136428833,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "MEETINGS",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_31",
+      "dist": 0.4380660653114319,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "TIME OFF",
+      "contains_clock_time": false,
+      "lexical_score": 0.6
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_52",
+      "dist": 0.4444561004638672,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "yboard, etc.)?",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_34",
+      "dist": 0.44466787576675415,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "IMPORTANT CONTACTS",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_10",
+      "dist": 0.4452197551727295,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "6. MANAGER 1:1 MEETING (1:00 PM - 2:00 PM)",
+      "contains_clock_time": true,
+      "lexical_score": 0.5
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_46",
+      "dist": 0.44850730895996094,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "5. WORK-LIFE BALANCE",
+      "contains_clock_time": false,
+      "lexical_score": 0.2
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_56",
+      "dist": 0.45025962591171265,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "SECURITY CONCERNS",
+      "contains_clock_time": false,
+      "lexical_score": 0.8
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_21",
+      "dist": 0.4554026126861572,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "REMOTE WORK GUIDELINES",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_47",
+      "dist": 0.4554026126861572,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "FREQUENTLY ASKED QUESTIONS",
+      "contains_clock_time": false,
+      "lexical_score": 0.0
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_51",
+      "dist": 0.4568409323692322,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "sick days without guilt.",
+      "contains_clock_time": false,
+      "lexical_score": 0.2
+    },
+    {
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_25",
+      "dist": 0.4580115079879761,
+      "source_file": "Employee_Onboarding_Guide_1.txt",
+      "header_first_line": "EMAIL",
+      "contains_clock_time": false,
+      "lexical_score": 0.2
+    }
+  ],
+  "context_length": 244
+}

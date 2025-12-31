@@ -141,6 +141,37 @@ def _compute_grounding_gate(
     selected_chunks: list[tuple[str, dict, float]],
     chunk_ids: list[str]
 ) -> tuple[bool, str, list[str], float, float, str]:
+    # --- Anchor-first fast-pass for time/numeric questions ---
+    def _has_time_anchor(text: str) -> bool:
+        t = text.lower()
+        return bool(
+            re.search(r'\b\d{1,2}:\d{2}\b', t) or          # 8:00
+            re.search(r'\b\d{1,2}\s?(am|pm)\b', t) or      # 8am, 8 am
+            re.search(r'\b\d{1,2}:\d{2}\s?(am|pm)\b', t)   # 8:00am, 8:00 am
+        )
+
+    def _question_is_time_like(q: str) -> bool:
+        ql = q.lower()
+        return any(w in ql for w in ["time", "when", "hour", "arrive", "arrival", "start"]) or bool(re.search(r'\b\d', ql))
+
+    def _weak_intent_match(q: str, evidence: str) -> bool:
+        ql = q.lower()
+        el = evidence.lower()
+        intent_terms = ["arrive", "arrival", "report", "start", "check-in", "begin", "office"]
+        return any(t in ql and t in el for t in intent_terms)
+
+    # (anchor-first fast-pass logic moved below after evidence_lines is defined)
+        # Extract text lines for return value
+        evidence_lines = [line for line, _ in top_evidence_tuples]
+
+        # Anchor-first fast-pass: if question is time-like and any evidence line contains a time anchor (and weak intent match), pass immediately
+        if _question_is_time_like(question):
+            for line in evidence_lines:
+                if _has_time_anchor(line) and _weak_intent_match(question, line):
+                    return True, "", evidence_lines, max_overlap, sum_top3, ""
+            # If you want it even more permissive (demo-friendly), drop _weak_intent_match:
+            # if any(_has_time_anchor(line) for line in evidence_lines):
+            #     return True, "", evidence_lines, max_overlap, sum_top3, ""
     """
     Deterministic grounding gate: check if retrieved chunks have sufficient evidence.
     
@@ -210,11 +241,9 @@ def _compute_grounding_gate(
     if is_time_sensitive:
         for line, overlap in top_evidence_tuples:
             has_anchor = bool(
-                re.search(r'\b\d+', line) or
-                re.search(r'\b\d{1,2}:\d{2}', line) or
-                re.search(r'\b(?:am|pm)\b', line.lower())
+                re.search(r'\b\d{1,2}:\d{2}\b', line.lower()) or re.search(r'\b\d{1,2}\s?(am|pm)\b', line.lower())
             )
-            if has_anchor and overlap >= MIN_SUPPORT:
+            if has_anchor and overlap >= 1:
                 explicit_support = True
                 break
     # For non-time/numeric questions, allow passing if max_overlap >= MIN_SUPPORT

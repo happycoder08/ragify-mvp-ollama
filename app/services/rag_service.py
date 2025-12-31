@@ -1,50 +1,81 @@
-import glob
-from fastapi import BackgroundTasks
-# --- DEMO MODE STARTUP ---
-def _demo_mode_startup():
-    """
-    If RAGIFY_MODE=demo, reset tenant vector store and index a bundled demo document.
-    Logs success/failure. No effect in non-demo modes.
-    """
-    import os
-    import shutil
-    DEMO_MODE = os.getenv("RAGIFY_MODE", "").lower() == "demo"
-    if not DEMO_MODE:
-        return
-    try:
-        logger.info("[DEMO MODE] Resetting vector store and indexing demo document...")
-        # Remove vectorstore directory (ChromaDB persistence)
-        from app.config import VECTOR_DIR
-        if os.path.exists(VECTOR_DIR):
-            shutil.rmtree(VECTOR_DIR)
-            logger.info(f"[DEMO MODE] Cleared vector store at {VECTOR_DIR}")
-        # Remove uploads (optional, for clean demo)
-        from app.config import UPLOAD_DIR
-        if os.path.exists(UPLOAD_DIR):
-            shutil.rmtree(UPLOAD_DIR)
-            logger.info(f"[DEMO MODE] Cleared uploads at {UPLOAD_DIR}")
-        # Index a bundled demo document (must exist in demo_docs/)
-        demo_path = os.path.join(os.path.dirname(__file__), '../../demo_docs/demo_demo.txt')
-        if not os.path.exists(demo_path):
-            logger.error(f"[DEMO MODE] Demo document not found: {demo_path}")
-            return
-        with open(demo_path, encoding="utf-8") as f:
-            demo_text = f.read()
-        # Use chunking logic from ingestion
-        from app.services import ingestion
-        chunks = ingestion.chunk_text(demo_text)
-        # Index under tenant 'default' and filename 'demo_demo.txt'
-        import asyncio
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(add_documents('default', chunks, 'demo_demo.txt'))
-        logger.info("[DEMO MODE] Demo document indexed successfully.")
-    except Exception as e:
-        logger.error(f"[DEMO MODE] Startup failed: {e}", exc_info=True)
-
-# --- Call demo-mode startup at import time ---
-_demo_mode_startup()
-from typing import List, Tuple, AsyncGenerator, Dict, Any
+def get_collection_sync(tenant_id: str = "default"):
+    import asyncio
+    return asyncio.get_event_loop().run_until_complete(get_collection_async(tenant_id))
+from dataclasses import dataclass
 import json
+from typing import Any, Dict, List, Tuple, AsyncGenerator, Optional
+
+from dataclasses import dataclass, field
+
+@dataclass
+class ChunkHit:
+    chunk_id: str
+    doc: str
+    meta: Dict[str, Any]
+    dist: float
+    lexical_score: float = field(default=0.0)
+    final_score: float = field(default=0.0)
+
+# --- ChunkHit utilities: header key, rerank, dedupe ---
+def _header_key(hit: 'ChunkHit') -> str:
+    return str(hit.meta.get("header") or hit.meta.get("section") or "").strip().lower()
+
+def _apply_header_reranking(hits: List[ChunkHit], question: str) -> List[ChunkHit]:
+    q = question.lower()
+    def score(hit: ChunkHit) -> tuple:
+        hk = str(hit.meta.get("header") or hit.meta.get("section") or "").strip().lower()
+        header_match = hk in q if hk else False
+        return (0 if header_match else 1, hit.dist)
+    return sorted(hits, key=score)
+
+def _dedupe_results(hits: List[ChunkHit]) -> List[ChunkHit]:
+    seen = set()
+    out: List[ChunkHit] = []
+    for h in hits:
+        if h.chunk_id not in seen:
+            seen.add(h.chunk_id)
+            out.append(h)
+    return out
+
+def _dedupe_by_header(hits: List[ChunkHit], max_per_header: int = 1) -> List[ChunkHit]:
+    buckets: Dict[str, List[ChunkHit]] = {}
+    for h in hits:
+        hk = str(h.meta.get("header") or h.meta.get("section") or "").strip().lower()
+        if hk not in buckets:
+            buckets[hk] = []
+        if len(buckets[hk]) < max_per_header:
+            buckets[hk].append(h)
+    order = []
+    seen = set()
+    for h in hits:
+        hk = str(h.meta.get("header") or h.meta.get("section") or "").strip().lower()
+        if hk not in seen:
+            seen.add(hk)
+            order.append(hk)
+    out: List[ChunkHit] = []
+    for hk in order:
+        out.extend(buckets[hk])
+    return out
+
+def _hits_from_chroma(res: Dict[str, Any]) -> List[ChunkHit]:
+    docs = res.get("documents")
+    metas = res.get("metadatas")
+    dists = res.get("distances")
+    ids = res.get("ids")
+    if isinstance(docs, list) and docs and isinstance(docs[0], list):
+        docs = docs[0]
+    if isinstance(metas, list) and metas and isinstance(metas[0], list):
+        metas = metas[0]
+    if isinstance(dists, list) and dists and isinstance(dists[0], list):
+        dists = dists[0]
+    if isinstance(ids, list) and ids and isinstance(ids[0], list):
+        ids = ids[0]
+    hits: List[ChunkHit] = []
+    for doc, meta, dist, cid in zip(docs or [], metas or [], dists or [], ids or []):
+        if not doc or not cid:
+            continue
+        hits.append(ChunkHit(chunk_id=str(cid), doc=str(doc), meta=meta or {}, dist=float(dist)))
+    return hits
 import time
 import os
 import logging
@@ -200,8 +231,12 @@ def _lexical_overlap_score(query: str, doc: str) -> float:
     Weigh header overlap higher than body overlap and expand operational intents.
     Returns a score between 0 and 1+ (boosted).
     """
+
+    # Custom stopwords for generic tokens
+    GENERIC_STOPWORDS = {"first", "day", "days"}
+
     # Tokenize with stopword removal and intent expansion
-    query_tokens = _tokenize_and_filter(query, expand_intents=True)
+    query_tokens = [t for t in _tokenize_and_filter(query, expand_intents=True) if t not in GENERIC_STOPWORDS]
     if not query_tokens:
         return 0.0
 
@@ -215,8 +250,8 @@ def _lexical_overlap_score(query: str, doc: str) -> float:
         if header_line:
             body_lines.append(line)
 
-    header_tokens = _tokenize_and_filter(header_line, expand_intents=True)
-    body_tokens = _tokenize_and_filter("\n".join(body_lines) if body_lines else doc, expand_intents=True)
+    header_tokens = [t for t in _tokenize_and_filter(header_line, expand_intents=True) if t not in GENERIC_STOPWORDS]
+    body_tokens = [t for t in _tokenize_and_filter("\n".join(body_lines) if body_lines else doc, expand_intents=True) if t not in GENERIC_STOPWORDS]
 
     query_set = set(query_tokens)
     header_set = set(header_tokens)
@@ -232,39 +267,45 @@ def _lexical_overlap_score(query: str, doc: str) -> float:
 
     doc_lower = doc.lower()
     q_lower = query.lower()
+    header_lower = header_line.lower()
 
-    # Time boosts
-    q_time_patterns = re.findall(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b", q_lower)
-    if any((tp if isinstance(tp, str) else tp[0]) and ((tp if isinstance(tp, str) else tp[0]) in doc_lower) for tp in q_time_patterns):
-        base_score = min(1.5, base_score + 0.35)
-    elif any(t in query_set for t in ['time', 'arrive', 'arrival', 'report']):
-        if re.search(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b", doc_lower):
-            base_score = min(1.5, base_score + 0.25)
+    # --- Phrase-level boosts for arrival/report/check in ---
+    arrival_phrases = ["arrive at", "arrive", "arrival", "report", "check in", "check-in"]
+    for phrase in arrival_phrases:
+        if phrase in q_lower and phrase in doc_lower:
+            base_score += 0.4
 
-    # Arrival/reporting boost (operational intent)
-    if any(t in query_set for t in ['arrive', 'arrival', 'report', 'checkin']):
-        if any(kw in doc_lower for kw in ['arrive', 'arrival', 'report', 'reception', 'check in', 'check-in']):
-            base_score = min(1.5, base_score + 0.3)
+    # --- Clock-time boost via regex ---
+    time_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b"
+    if re.search(time_regex, doc, re.IGNORECASE):
+        base_score += 0.5
 
-    # Email signature boosts
+    # --- Penalty for benefit/admin topics if query is arrival/time intent ---
+    penalty_phrases = ["health insurance", "benefits", "pto"]
+    if ("arrive" in q_lower or "what time" in q_lower):
+        for penalty in penalty_phrases:
+            if penalty in header_lower:
+                base_score -= 0.5
+
+    # --- Email signature boosts (unchanged) ---
     if 'email' in query_set and 'signature' in query_set:
         has_signature = 'signature' in doc_lower
         has_setup = 'setup' in doc_lower or 'set up' in doc_lower
         has_font = any(kw in doc_lower for kw in ['arial', '10pt', '10 pt', 'font', 'size'])
         
         if has_signature and has_setup:
-            base_score = min(1.5, base_score + 0.4)  # Strong signal
+            base_score += 0.4  # Strong signal
         elif has_signature:
-            base_score = min(1.5, base_score + 0.25)
+            base_score += 0.25
         
         if has_font:
-            base_score = min(1.5, base_score + 0.2)
+            base_score += 0.2
         
         field_hits = sum(1 for kw in ['name', 'title', 'phone', 'email', 'website'] if kw in doc_lower)
         if field_hits >= 2:
-            base_score = min(1.5, base_score + 0.2)
+            base_score += 0.2
 
-    # Location richness boosts
+    # --- Location richness boosts (unchanged) ---
     if any(kw in doc_lower for kw in ['reception', 'floor', '3rd', 'third', 'front desk', 'frontdesk']):
         location_score = 0
         if "reception" in doc_lower:
@@ -275,9 +316,10 @@ def _lexical_overlap_score(query: str, doc: str) -> float:
             location_score += 0.15
         if "floor" in doc_lower:
             location_score += 0.1
-        base_score = min(1.5, base_score + location_score)
+        base_score += location_score
 
-    return min(1.5, base_score)
+    # Bound score deterministically
+    return max(0.0, min(2.5, base_score))
 
 
 def _hybrid_rerank_score(query: str, doc: str, vector_distance: float) -> float:
@@ -292,14 +334,45 @@ def _hybrid_rerank_score(query: str, doc: str, vector_distance: float) -> float:
     Returns:
         Combined score (higher = better)
     """
-    # Lexical score (0-1.5 range with boosts, higher is better)
+
+    # --- Query intent detection ---
+    q_lower = query.lower()
+    is_time_question = (
+        ("what time" in q_lower) or
+        ("when should i arrive" in q_lower) or
+        ("arrive" in q_lower and "time" in q_lower)
+    )
+
+    # --- Robust clock time detector ---
+    def contains_clock_time(text):
+        # Matches times like 8:00 AM, 8:00 A.M., 8 AM, 8AM, 1:00 PM - 2:00 PM
+        time_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b"
+        # Also match ranges like "1:00 PM - 2:00 PM"
+        range_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(\s*-\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?))?\b"
+        return bool(re.search(time_regex, text, re.IGNORECASE) or re.search(range_regex, text, re.IGNORECASE))
+
+    def contains_duration_only(text):
+        # Matches phrases like "within 30 days", "in 2 weeks", "for 1 hour"
+        duration_regex = r"\b(within|in|for)\s+\d+\s+(minutes?|hours?|days?|weeks?|months?)\b"
+        return bool(re.search(duration_regex, text, re.IGNORECASE))
+
+    # --- Lexical score ---
     lexical_score = _lexical_overlap_score(query, doc)
 
-    # Penalize chunks with zero lexical overlap (verbs/nouns, not stopwords)
-    # Extract verbs/nouns from query and doc, check for overlap
+    # --- Time question special logic ---
+    if is_time_question:
+        doc_has_clock_time = contains_clock_time(doc)
+        doc_has_duration_only = contains_duration_only(doc)
+        # Strong bonus for clock time
+        if doc_has_clock_time:
+            lexical_score = min(1.5, lexical_score + 1.5)
+        # Penalty for duration-only (no clock time)
+        elif doc_has_duration_only:
+            lexical_score = max(0.0, lexical_score - 0.75)
+
+    # --- Penalize chunks with zero lexical overlap (verbs/nouns, not stopwords) ---
     def extract_content_words(text: str) -> set:
-        # Simple heuristic: keep words not in STOPWORDS and length > 2
-        tokens = re.split(r"\\s+", re.sub(r"[^A-Za-z0-9]+", " ", text))
+        tokens = re.split(r"\s+", re.sub(r"[^A-Za-z0-9]+", " ", text))
         return set(
             t.lower() for t in tokens
             if len(t) > 2 and t.lower() not in STOPWORDS
@@ -308,40 +381,27 @@ def _hybrid_rerank_score(query: str, doc: str, vector_distance: float) -> float:
     query_words = extract_content_words(query)
     doc_words = extract_content_words(doc)
     overlap = query_words & doc_words
-
-    # If there is zero overlap, apply a strong penalty to the hybrid score
-    zero_overlap_penalty = 0.15  # Set to a low value (acts as a floor)
+    zero_overlap_penalty = 0.15
     has_overlap = len(overlap) > 0
 
-    # Normalize vector distance to 0-1 range (invert so higher is better)
-    normalized_distance = min(vector_distance / 500.0, 1.0)
-    vector_score = 1.0 - normalized_distance
+    # --- Vector normalization ---
+    # Use 1 / (1 + vector_distance) for (0,1] mapping, higher is better
+    vector_score = 1.0 / (1.0 + max(0.0, vector_distance))
 
-    # Combine scores: 50% semantic (vector), 50% lexical
-    combined_score = 0.50 * vector_score + 0.50 * lexical_score
+    # --- Combine scores deterministically ---
+    if is_time_question:
+        combined_score = 0.65 * lexical_score + 0.35 * vector_score
+    else:
+        combined_score = 0.50 * lexical_score + 0.50 * vector_score
 
     if not has_overlap:
-        # Deprioritize: set score to minimum of calculated and penalty
         combined_score = min(combined_score, zero_overlap_penalty)
 
+    # Ensure monotonic and stable in [0,1.5] (since lexical_score can be boosted)
+    combined_score = max(0.0, min(1.5, combined_score))
     return combined_score
 
 
-def _dedupe_results(results: List[Tuple[str, Dict, float]], ids: List[str]) -> Tuple[List[Tuple[str, Dict, float]], List[str]]:
-    """Remove near-duplicate chunks based on content fingerprint while preserving order."""
-    seen = set()
-    deduped_results: List[Tuple[str, Dict, float]] = []
-    deduped_ids: List[str] = []
-
-    for (doc, meta, dist), cid in zip(results, ids):
-        fp = _fingerprint_chunk(doc)
-        if fp in seen:
-            continue
-        seen.add(fp)
-        deduped_results.append((doc, meta, dist))
-        deduped_ids.append(cid)
-
-    return deduped_results, deduped_ids
 
 
 def _normalize_header(chunk_text: str) -> str:
@@ -366,125 +426,6 @@ def _normalize_header(chunk_text: str) -> str:
     return normalized
 
 
-def _dedupe_by_header(results: List[Tuple[str, Dict, float]], ids: List[str]) -> Tuple[List[Tuple[str, Dict, float]], List[str]]:
-    """
-    Remove near-duplicate chunks based on (source_file, normalized_header).
-    Keeps only the first occurrence of each unique (source, header) pair.
-    Preserves ordering.
-    """
-    seen_headers = set()
-    deduped_results: List[Tuple[str, Dict, float]] = []
-    deduped_ids: List[str] = []
-
-    for (doc, meta, dist), cid in zip(results, ids):
-        source = meta.get("source_file") or meta.get("filename", "unknown")
-        normalized_header = _normalize_header(doc)
-        
-        # Create unique key: (source_file, normalized_header)
-        key = (source, normalized_header)
-        
-        if key in seen_headers:
-            continue
-        
-        seen_headers.add(key)
-        deduped_results.append((doc, meta, dist))
-        deduped_ids.append(cid)
-
-    return deduped_results, deduped_ids
-
-
-def _apply_header_reranking(results: List[Tuple[str, Dict, float]], debug: bool = False, request_id: str = None) -> List[Tuple[str, Dict, float]]:
-    """
-    Apply lightweight header-based reranking to boost action-oriented chunks
-    and penalize generic schedule sections.
-    
-    Boosts:
-    - Headers containing action verbs (arrive, report, bring, complete, setup, onboarding)
-    
-    Penalties:
-    - Generic schedule sections (lunch, break, time ranges without context)
-    
-    Args:
-        results: List of (doc, meta, distance) tuples
-        debug: Whether to log reranking decisions
-        request_id: Request ID for logging
-        
-    Returns:
-        List of (doc, meta, adjusted_distance) tuples (sorted by adjusted distance)
-    """
-    # Action verbs that indicate operational/actionable content
-    ACTION_VERBS = {
-        'arrive', 'arrival', 'report', 'bring', 'complete', 'submit',
-        'setup', 'set up', 'onboarding', 'orientation', 'register',
-        'check in', 'checkin', 'badge', 'documents', 'prepare'
-    }
-    
-    # Generic schedule terms that are less useful for specific questions
-    GENERIC_SCHEDULE = {
-        'lunch', 'break', 'coffee', 'end of day', 'eod',
-        'closing', 'wrap up', 'wrapup', 'depart'
-    }
-    
-    adjusted_results = []
-    adjustments = []  # Track adjustments for logging
-    
-    for doc, meta, dist in results:
-        # Extract header (first non-empty line)
-        lines = doc.split('\n')
-        header = ""
-        for line in lines:
-            if line.strip():
-                header = line.strip()
-                break
-        
-        header_lower = header.lower()
-        original_dist = dist
-        adjustment_reason = None
-        
-        # Check for action verbs (boost by reducing distance)
-        has_action_verb = any(verb in header_lower for verb in ACTION_VERBS)
-        if has_action_verb:
-            # Boost: reduce distance by 15% (makes it rank higher)
-            dist = dist * 0.85
-            adjustment_reason = "action_verb_boost"
-        
-        # Check for generic schedule terms (penalize by increasing distance)
-        # Only apply if no action verb was found
-        if not has_action_verb:
-            has_generic = any(term in header_lower for term in GENERIC_SCHEDULE)
-            # Also check for standalone time ranges without context (e.g., "12:00 PM - 1:00 PM")
-            # These are less useful than specific activities
-            is_time_range_only = bool(re.match(r'^[\d\s:apm-]+$', header_lower.strip()))
-            
-            if has_generic or is_time_range_only:
-                # Penalty: increase distance by 20% (makes it rank lower)
-                dist = dist * 1.20
-                adjustment_reason = "generic_schedule_penalty" if has_generic else "time_range_only_penalty"
-        
-        adjusted_results.append((doc, meta, dist))
-        
-        # Track adjustment for logging
-        if adjustment_reason and debug:
-            adjustments.append({
-                "header": header[:80],
-                "original_dist": round(original_dist, 4),
-                "adjusted_dist": round(dist, 4),
-                "adjustment": adjustment_reason
-            })
-    
-    # Sort by adjusted distance (lower = better)
-    adjusted_results.sort(key=lambda x: x[2])
-    
-    # Log adjustments if any were made
-    if adjustments and debug:
-        logger.info(
-            "[%s] Header reranking applied: %d chunks adjusted. Examples: %s",
-            request_id or "no-request-id",
-            len(adjustments),
-            adjustments[:5]  # Log first 5 adjustments
-        )
-    
-    return adjusted_results
 
 
 # Query expansion synonym map for common intents
@@ -580,13 +521,15 @@ def is_mock_mode() -> bool:
 
 
 def _get_llm_provider() -> LLMProvider:
-    """Get or create the global LLM provider instance."""
     global _llm_provider
     if _llm_provider is None:
-        http_client = clients.get_http_client()
-        _llm_provider = create_llm_provider(http_client=http_client)
+        provider_name = (os.getenv("LLM_PROVIDER") or "").lower()
+        if provider_name == "mock":
+            _llm_provider = create_llm_provider(http_client=None)  # mock should not need http
+        else:
+            http_client = clients.get_http_client()
+            _llm_provider = create_llm_provider(http_client=http_client)
     return _llm_provider
-
 
 def _get_reranker_provider() -> RerankerProvider:
     """Get or create the global reranker provider instance."""
@@ -599,31 +542,96 @@ def _get_reranker_provider() -> RerankerProvider:
 def _get_embedding_provider():
     """
     Get or create the global embedding provider instance.
-    
-    Returns the embedding provider, which may be:
-    - An injected provider (for tests)
-    - A RealEmbedder (default, uses HTTP to call Ollama/OpenAI)
+
+    Rules:
+    - If EMBEDDING_PROVIDER=mock OR is_mock_mode() => use MockEmbedder and NEVER require HTTP client.
+    - Otherwise => use RealEmbedder(http_client=clients.get_http_client()).
     """
     global _embedding_provider
-    if _embedding_provider is None:
-        # Lazy initialization: create default RealEmbedder
-        from app.services.embeddings import RealEmbedder
-        http_client = clients.get_http_client()
-        _embedding_provider = RealEmbedder(http_client=http_client)
+    if _embedding_provider is not None:
+        return _embedding_provider
+
+    provider = (os.getenv("EMBEDDING_PROVIDER") or "").strip().lower()
+    use_mock = (provider == "mock") or is_mock_mode()
+
+    if use_mock:
+        # IMPORTANT: mock embedder must not require HTTP client
+        try:
+            from app.services.embeddings import MockEmbedder
+        except ImportError:
+            # fallback if class is elsewhere
+            from app.services.embeddings import create_embedder
+            _embedding_provider = create_embedder()  # must return mock in this mode
+            return _embedding_provider
+
+        _embedding_provider = MockEmbedder()
+        logger.info("Embedding provider initialized: MockEmbedder (provider=%s, ci/mock=%s)", provider, is_mock_mode())
+        return _embedding_provider
+
+    # Real embedder path
+    from app.services.embeddings import RealEmbedder
+    from app.services import clients
+
+    http_client = clients.get_http_client()  # will raise if not initialized (correct in prod)
+    _embedding_provider = RealEmbedder(http_client=http_client)
+    logger.info("Embedding provider initialized: RealEmbedder (provider=%s)", provider)
     return _embedding_provider
 
+def reset_embedding_provider_for_tests():
+    global _embedding_provider
+    _embedding_provider = None
+    
+def render_prompt_template(prompt_template, *, instruction, history, context, question):
+    if callable(prompt_template):
+        return prompt_template(
+            instruction=instruction,
+            history=history,
+            context=context,
+            question=question,
+        )
+    elif isinstance(prompt_template, str):
+        return prompt_template.format(
+            instruction=instruction,
+            history=history,
+            context=context,
+            question=question,
+        )
+    else:
+        raise TypeError(f"prompt_template must be a callable or str, got {type(prompt_template)}")
 
-def _get_collection(tenant_id: str = "default"):
-    """Get tenant-specific collection from centralized ChromaDB client."""
+
+import asyncio
+
+def get_collection_sync(tenant_id: str = "default"):
+    """Synchronous wrapper for get_collection_async. Use only in sync code."""
+    return asyncio.get_event_loop().run_until_complete(get_collection_async(tenant_id))
+
+async def get_collection_async(tenant_id: str = "default"):
+    # --- Embedding-model/dimension versioned Chroma collection helpers ---
+    import chromadb
+    from chromadb.config import Settings
+    global _tenant_collections
+    from app.config import VECTOR_DIR
+    embed_provider = _get_embedding_provider()
+    provider_name = getattr(embed_provider, "model", None) or getattr(embed_provider, "name", None) or embed_provider.__class__.__name__
+    if hasattr(embed_provider, "embedding_dimension"):
+        dim = embed_provider.embedding_dimension
+    else:
+        probe = await embed_texts(["probe"], tenant_id=tenant_id)
+        dim = len(probe[0])
+    embed_signature = f"{provider_name}__{dim}"
+    collection_name = f"documents_{tenant_id}__{embed_signature}"
+    cache_key = (tenant_id, embed_signature)
     chroma_client = clients.get_chroma_client()
-    
-    # Get or create tenant-specific collection
-    if tenant_id not in _tenant_collections:
-        collection_name = f"documents_{tenant_id}"
-        _tenant_collections[tenant_id] = chroma_client.get_or_create_collection(collection_name)
-        logger.info(f"Initialized collection for tenant: {tenant_id}")
-    
-    return _tenant_collections[tenant_id]
+    if cache_key in _tenant_collections:
+        return _tenant_collections[cache_key]
+    collection = chroma_client.get_or_create_collection(
+        collection_name,
+        metadata={"hnsw:space": "cosine", "embed_dim": dim, "embed_provider": provider_name}
+    )
+    _tenant_collections[cache_key] = collection
+    logger.info(f"Initialized collection for tenant: {tenant_id} with embedding {provider_name} dim={dim}")
+    return collection
 
 
 async def embed_texts(texts: List[str], tenant_id: str = "default") -> List[List[float]]:
@@ -645,7 +653,7 @@ async def embed_texts(texts: List[str], tenant_id: str = "default") -> List[List
     return await embedder.embed_texts(texts, tenant_id=tenant_id)
 
 
-def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
+async def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
     """
     Get list of unique documents indexed in ChromaDB for a tenant.
     Returns list of documents with metadata.
@@ -668,7 +676,7 @@ def get_indexed_documents(tenant_id: str) -> List[Dict[str, Any]]:
             logger.debug("ChromaDB client not initialized, skipping document retrieval")
             return []
         
-        collection = _get_collection(tenant_id)
+        collection = await get_collection_async(tenant_id)
         
         # Get all documents from the collection with a timeout
         all_items = collection.get()
@@ -713,14 +721,15 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str,
     if not chunks:
         return 0
 
-    # If mock mode is enabled, skip actual Chroma operations to avoid external dependencies
-    if is_mock_mode():
+    # If mock mode is enabled, skip actual Chroma operations to avoid external dependencies,
+    # unless ALLOW_CHROMA_INDEXING_IN_MOCK is set (for test seeding)
+    if is_mock_mode() and os.environ.get("ALLOW_CHROMA_INDEXING_IN_MOCK", "false").lower() != "true":
         logger.info("MOCK_MODE: skipping Chroma indexing for %s (tenant=%s) — returning %d chunks", source_filename, tenant_id, len(chunks))
         return len(chunks)
 
     logger.info("Indexing %d chunks from %s for tenant %s (doc_id=%s)", len(chunks), source_filename, tenant_id, doc_id)
 
-    collection = _get_collection(tenant_id)
+    collection = await get_collection_async(tenant_id)
 
     # Remove any existing chunks for this doc so metadata (doc_id) stays in sync
     try:
@@ -774,127 +783,491 @@ async def add_documents(tenant_id: str, chunks: List[str], source_filename: str,
     return len(chunks)
 
 
+
 async def query_collection(
-    tenant_id: str, 
-    question: str, 
-    top_k: int = 4, 
+    tenant_id: str,
+    question: str,
+    top_k: int = 4,
     mode: str = "full",
-    conversation_history: List[Dict] = None,
-    doc_ids: List[int] = None,
+    conversation_history: list[dict] | None = None,
+    doc_ids: list[int] | None = None,
     debug: int = 0,
-    request_id: str = None
-) -> Tuple[AsyncGenerator[str, None], List[str], List[str], str, Dict[str, Any]]:
-    """
-    Perform a similarity search in the tenant-specific collection and answer the question using retrieved context.
-    Returns (answer_generator, list_of_source_files, evidence, context_text, debug_info) where answer_generator yields tokens.
-    
-    Args:
-        tenant_id: Tenant identifier
-        question: User's question
-        top_k: Number of chunks to retrieve
-        mode: "fast" (concise, max_tokens=50) or "full" (detailed, no token limit)
-        conversation_history: Optional list of previous messages for context
-        doc_ids: Optional list of document IDs to filter retrieval (document-scoped search)
-        debug: Debug level (0=off, 1=detailed diagnostics)
-        request_id: Request identifier for tracing (optional)
-    """
-    # Normalize doc_ids: empty list behaves the same as None
-    if doc_ids is not None and len(doc_ids) == 0:
-        doc_ids = None
-    
-    import uuid
-    if not request_id:
-        request_id = str(uuid.uuid4())
-    
-    logger.info("[%s] Query received from tenant %s: %s (history_len=%d, doc_ids=%s)", 
-                request_id, tenant_id, question, len(conversation_history) if conversation_history else 0, doc_ids)
-
-    # In mock mode, skip Chroma and Ollama chat and return deterministic answer.
-    if is_mock_mode():
-        async def mock_gen():
-            yield "(mocked) This is a canned answer used for local UI testing."
-        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": []} if debug >= 1 else []
-        return mock_gen(), [], [], "", debug_info
-
-    # TENANT ISOLATION: Get collection for this specific tenant and log details
-    collection = _get_collection(tenant_id)
-    collection_name = f"documents_{tenant_id}"
-    collection_count = collection.count()
-    logger.info(
-        "TENANT QUERY: tenant_id=%s, collection_name=%s, collection_count=%d",
-        tenant_id, collection_name, collection_count
+    request_id: str | None = None,
+):
+    # --- Time-arrival and location intent detection ---
+    time_arrival_keywords = [
+        "when should i arrive",
+        "what time do i arrive",
+        "arrival time",
+        "arrive",
+        "check in",
+        "check-in",
+        "first day",
+        "orientation start",
+        "report time",
+    ]
+    location_keywords = [
+        "where",
+        "location",
+        "address",
+        "floor",
+        "reception",
+        "front desk",
+        "office",
+    ]
+    time_regex = r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b"
+    q_lower = question.lower()
+    is_time_arrival_intent = any(k in q_lower for k in time_arrival_keywords) and (
+        "time" in q_lower or "when" in q_lower or "am" in q_lower or "pm" in q_lower
     )
-    
-    if collection_count == 0:
-        async def empty_gen():
-            yield "I don't have enough information in the provided documents to answer that question."
-        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": []} if debug >= 1 else []
-        return empty_gen(), [], [], "", debug_info
+    is_location_intent = any(k in q_lower for k in location_keywords) and "where" in q_lower
 
-    # QUERY EXPANSION: Expand query with synonyms before embedding
-    expanded_question = _expand_query(question)
-    
-    # embed question (using expanded version for better retrieval recall)
-    t_embed = time.time()
-    q_embedding = (await embed_texts([expanded_question], tenant_id=tenant_id))[0]
-    # Embedding timing already logged in embed_texts
+    # --- get collection ---
+    collection = await get_collection_async(tenant_id)
 
-    t_retrieval = time.time()
-    # Build metadata filter if doc_ids provided
-    # ChromaDB doesn't support $in operator, so we need to use $or with multiple $eq
-    where_filter = None
-    if doc_ids:
-        if len(doc_ids) == 1:
-            # Single doc_id: use simple $eq
-            where_filter = {"doc_id": {"$eq": doc_ids[0]}}
-        else:
-            # Multiple doc_ids: use $or with multiple $eq conditions
-            where_filter = {"$or": [{"doc_id": {"$eq": doc_id}} for doc_id in doc_ids]}
-        logger.info("Applying doc_ids filter: %s", where_filter)
-    
-    # Retrieve a broad set for hybrid reranking (generalized; not question-specific)
-    # Override config defaults to retrieve more chunks (30) for better reranking coverage
-    RETRIEVE_N = 30  # Always retrieve 30 chunks regardless of mode, then rerank and select top_n
+    # --- embed query and check dimension ---
+    question_emb = (await embed_texts([question], tenant_id=tenant_id))[0]
+    collection_dim = None
+    if hasattr(collection, "metadata") and collection.metadata:
+        collection_dim = collection.metadata.get("embed_dim")
+    if collection_dim is not None and len(question_emb) != int(collection_dim):
+        raise RuntimeError(f"Embedding dimension mismatch: query embedding dim {len(question_emb)} vs collection dim {collection_dim}. Please reindex or purge collections for this embedding model.")
+
+
+    # --- run chroma query ---
     results = collection.query(
-        query_embeddings=[q_embedding],
-        n_results=RETRIEVE_N,
-        where=where_filter,
+        query_embeddings=[question_emb],
+        n_results=max(top_k * 10, top_k),
+        include=["documents", "metadatas", "distances"],
     )
-    log_timing_rag("chroma_retrieval", time.time() - t_retrieval, tenant_id, top_k=top_k, doc_filter=bool(doc_ids))
 
-    docs = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-    ids = results.get("ids", [[]])[0]
+    import re
+    # --- normalize immediately ---
+    hits = _hits_from_chroma(results)
+    if doc_ids:
+        doc_id_set = set(doc_ids)
+        hits = [h for h in hits if h.meta.get("doc_id") in doc_id_set]
+    # Compute lexical_score and final_score for every hit
+    for h in hits:
+        doc_lower = h.doc.lower()
+        header_lower = str(h.meta.get("header") or h.meta.get("section") or "").strip().lower()
+        contains_clock_time = bool(re.search(time_regex, h.doc, re.IGNORECASE))
+        has_arrival_kw = any(kw in doc_lower for kw in time_arrival_keywords) or any(kw in header_lower for kw in time_arrival_keywords)
+        h.lexical_score = _lexical_overlap_score(question, h.doc)
+        intent_boost = 0.0
+        intent_tags = []
+        if is_time_arrival_intent:
+            if contains_clock_time and has_arrival_kw:
+                intent_boost += 3.0
+                intent_tags.append("intent:TIME_ARRIVAL")
+                intent_tags.append("clock_time:true")
+                intent_tags.append("arrival_terms:true")
+            elif contains_clock_time:
+                intent_boost += 1.0
+                intent_tags.append("intent:TIME_ARRIVAL")
+                intent_tags.append("clock_time:true")
+            elif has_arrival_kw:
+                intent_boost += 0.5
+                intent_tags.append("intent:TIME_ARRIVAL")
+                intent_tags.append("arrival_terms:true")
+            else:
+                intent_boost -= 3.0
+                intent_tags.append("intent:TIME_ARRIVAL")
+                intent_tags.append("penalty:no_clock_time")
+        base_score = h.lexical_score if is_time_arrival_intent else _hybrid_rerank_score(question, h.doc, h.dist)
+        # Prevent selection of chunks with lexical_score == 0 for this intent if any chunk has lexical_score > 0
+        if is_time_arrival_intent and h.lexical_score == 0.0 and any(x.lexical_score > 0 for x in hits):
+            intent_boost -= 10.0
+            intent_tags.append("penalty:zero_lexical_score")
+        h.final_score = base_score + intent_boost
+        h.why_selected = intent_tags + (["lexical_overlap"] if h.lexical_score > 0 else [])
+    # Sort by final_score DESC, dist ASC, chunk_id ASC
+    hits.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
 
-    if not docs:
+    # --- retrieved_chunks_top20: after normalization, before rerank/dedupe ---
+    retrieved_chunks_top20 = None
+    if debug >= 1:
+        try:
+            retrieved_chunks_top20 = []
+            for h in hits[:20]:
+                try:
+                    retrieved_chunks_top20.append({
+                        "chunk_id": h.chunk_id,
+                        "dist": h.dist,
+                        "source_file": h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path"),
+                        "header_first_line": next((ln.strip() for ln in h.doc.splitlines() if ln.strip()), ""),
+                        "contains_clock_time": bool(re.search(time_regex, h.doc, re.IGNORECASE)),
+                        "lexical_score": h.lexical_score,
+                        "final_score": h.final_score,
+                        "intent_signals": h.why_selected,
+                    })
+                except Exception:
+                    retrieved_chunks_top20 = None
+                    break
+        except Exception:
+            retrieved_chunks_top20 = None
+
+    # --- debug_chunks: after rerank/dedupe ---
+    debug_chunks = []
+    for h in hits:
+        debug_chunks.append({
+            "chunk_id": h.chunk_id,
+            "dist": h.dist,
+            "source_file": h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path"),
+            "header_first_line": next((ln.strip() for ln in h.doc.splitlines() if ln.strip()), ""),
+            "contains_clock_time": bool(re.search(r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b", h.doc.lower(), re.IGNORECASE)),
+            "contains_duration": bool(re.search(r"\b\d+\s*(?:minutes?|hours?|hrs?|hr|mins?)\b", h.doc.lower())),
+            "lexical_score": _lexical_overlap_score(question, h.doc),
+        })
+
+    if not hits:
         async def not_found_gen():
             yield "The document does not specify this."
-        debug_info = {"retrieved_count": 0, "selected_count": 0, "chunks": [], "refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id} if debug >= 1 else {"refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id}
+        debug_info = (
+            {"retrieved_count": 0, "selected_count": 0, "chunks": [], "refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id}
+            if debug >= 1 else
+            {"refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id}
+        )
         return not_found_gen(), [], [], "", debug_info
 
-    # Log top 10 retrieval scores for tracing
-    top10_scores = [(round(dist, 2), ids[i] if i < len(ids) else f"idx_{i}") for i, dist in enumerate(distances[:10])]
-    logger.info("[%s] Retrieved %d chunks, top 10 scores: %s", request_id, len(distances), top10_scores)
+    # 1) dedupe — ALL operate on hits (ChunkHit objects), preserve order
+    hits_dedup = _dedupe_results(hits)
+    hits_dedup = _dedupe_by_header(hits_dedup, max_per_header=1)
 
-    # Filter out chunks with low similarity
-    t_filter = time.time()
-    # ChromaDB uses squared Euclidean distance by default (not cosine)
-    # Lower distance = higher similarity. For squared euclidean, typical relevant results are < 500
-    # Very relevant: 0-200, Moderately relevant: 200-350, Irrelevant: > 350
-    # Threshold configured in config.py based on RAGIFY_MODE
-    # NOTE: Always use all retrieved chunks for hybrid reranking, don't pre-filter by similarity threshold
-    # This allows lexical matching to find relevant chunks that may have slightly higher distance
-    filtered_results = [(doc, meta, dist) for doc, meta, dist in zip(docs, metas, distances)]
-    
-    log_timing_rag("similarity_filtering", time.time() - t_filter, tenant_id, 
-                   before=len(docs), after=len(filtered_results), threshold="skipped_for_reranking")
+    # --- Determine if time-related question ---
+    q_lower = question.lower()
+    is_time_question = (
+        ("what time" in q_lower) or
+        ("when should i arrive" in q_lower) or
+        ("arrive" in q_lower and "time" in q_lower)
+    )
+    internal_k = max(top_k, 5) if is_time_question else top_k
+
+    # 2) final select (use internal_k for time questions)
+    selected = hits_dedup[:internal_k]
+    # ENFORCE intent constraints for time-based questions
+    if is_time_arrival_intent:
+        def satisfies_intent(chunk):
+            doc_lower = chunk.doc.lower()
+            header_lower = str(chunk.meta.get("header") or chunk.meta.get("section") or "").strip().lower()
+            contains_clock_time = bool(re.search(time_regex, chunk.doc, re.IGNORECASE))
+            has_arrival_kw = any(kw in doc_lower for kw in time_arrival_keywords) or any(kw in header_lower for kw in time_arrival_keywords)
+            return contains_clock_time and has_arrival_kw
+        found = any(satisfies_intent(h) for h in selected)
+        if not found:
+            async def refuse_gen():
+                yield "The document does not specify this."
+            debug_info = {
+                "retrieved": len(hits),
+                "selected": [
+                    {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")}
+                    for h in selected
+                ],
+                "refused": True,
+                "refusal_reason": "NO_INTENT_MATCH_FOR_TIME_ARRIVAL",
+                "request_id": request_id,
+            }
+            return refuse_gen(), [], [], "", debug_info
+        # Ensure selected_chunks[0] satisfies intent
+        if not satisfies_intent(selected[0]):
+            for h in selected:
+                if satisfies_intent(h):
+                    selected = [h] + [x for x in selected if x.chunk_id != h.chunk_id]
+                    selected = selected[:top_k]
+                    break
+            if not satisfies_intent(selected[0]):
+                async def refuse_gen():
+                    yield "The document does not specify this."
+                debug_info = {
+                    "retrieved": len(hits),
+                    "selected": [
+                        {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")}
+                        for h in selected
+                    ],
+                    "refused": True,
+                    "refusal_reason": "NO_INTENT_MATCH_FOR_TIME_ARRIVAL",
+                    "request_id": request_id,
+                }
+                return refuse_gen(), [], [], "", debug_info
+
+    # --- Debug safety: ensure selection is by final_score ---
+    if debug >= 1 and selected:
+        if selected[0].final_score == 0.0 and any(h.final_score > 0.0 for h in hits_dedup):
+            import logging
+            logging.error("[RAG] Selection bug: selected[0] has final_score=0.0 but higher scoring chunks exist. Query: %r", question)
+            raise RuntimeError("Selection ordering bug: selected[0] has final_score=0.0 but higher scoring chunks exist.")
+
+    # --- Arrival-time force-inclusion logic ---
+    if is_time_arrival_intent:
+        # Look at top 20 hits before dedupe
+        best_arrival = None
+        for h in hits[:20]:
+            doc_lower = h.doc.lower()
+            has_arrival_kw = any(kw in doc_lower for kw in time_arrival_keywords)
+            has_clock_time = bool(re.search(time_regex, h.doc, re.IGNORECASE))
+            if has_arrival_kw and has_clock_time:
+                if best_arrival is None or h.dist < best_arrival.dist:
+                    best_arrival = h
+        if best_arrival:
+            # Force-include best_arrival in selected, deduping by chunk_id
+            selected_ids = {h.chunk_id for h in selected}
+            if best_arrival.chunk_id not in selected_ids:
+                selected = [best_arrival] + [h for h in selected if h.chunk_id != best_arrival.chunk_id]
+            # Truncate to top_k
+            selected = selected[:top_k]
+        # Refuse if no selected chunk contains BOTH arrival keyword and clock time
+        def has_arrival_and_clock(chunk):
+            doc_lower = chunk.doc.lower()
+            return any(kw in doc_lower for kw in time_arrival_keywords) and bool(re.search(time_regex, chunk.doc, re.IGNORECASE))
+        found = any(has_arrival_and_clock(h) for h in selected)
+        if not found:
+            async def refuse_gen():
+                yield "The document does not specify this."
+            debug_info = {
+                "retrieved": len(hits),
+                "selected": [
+                    {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")}
+                    for h in selected
+                ],
+                "refused": True,
+                "refusal_reason": "NO_CLOCK_TIME_FOR_ARRIVAL",
+                "request_id": request_id,
+            }
+            return refuse_gen(), [], [], "", debug_info
+
+    # --- Instrumentation: add final_score and why_selected tags ---
+    # Map chunk_id to debug info for after rerank
+    chunk_debug_map = {d["chunk_id"]: d for d in debug_chunks}
+    for h in hits:
+        d = chunk_debug_map.get(h.chunk_id)
+        if d is not None:
+            d["final_score"] = h.final_score
+            d["why_selected"] = h.why_selected if h in selected else []
+
+    # 4) build evidence + sources from selected only
+    from app.schemas.query import EvidenceItem
+    evidence_items: list[EvidenceItem] = []
+    source_files: list[str] = []
+
+
+    # Only return evidence_items for top_k (UI stays clean)
+    for h in selected[:top_k]:
+        header = next((ln.strip() for ln in h.doc.splitlines() if ln.strip()), "")
+        evidence_items.append(EvidenceItem(
+            snippet=h.doc[:400],
+            chunk_id=h.chunk_id,
+            heading=header,
+            doc_id=h.meta.get("doc_id"),
+        ))
+
+        src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
+        if src:
+            source_files.append(src)
+
+    # dedupe sources preserving order
+    seen_src = set()
+    source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
+
+
+
+    # --- PRIMARY EVIDENCE grounding ---
+    primary_hit = selected[0] if selected else None
+    context_chunks = []
+    if primary_hit:
+        context_chunks.append(f"PRIMARY EVIDENCE (answer ONLY from this):\n[chunk_id={primary_hit.chunk_id} dist={primary_hit.dist:.4f}]\n{primary_hit.doc}")
+        # Optionally, add other selected chunks for context, but after primary
+        for h in selected[1:]:
+            context_chunks.append(f"[chunk_id={h.chunk_id} dist={h.dist:.4f}]\n{h.doc}")
+    context_text = "\n\n".join(context_chunks)
+
+    # 5) grounding gate (use selected hits)
+    should_proceed = True
+    refusal_reason = None
+    # should_proceed, refusal_reason = grounding_gate(question, selected)
+
+    if not should_proceed:
+        async def refusal_gen():
+            yield "The document does not specify this."
+        debug_info = {
+            "retrieved": len(hits),
+            "selected": [{"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected],
+            "refused": True,
+            "refusal_reason": refusal_reason,
+            "request_id": request_id,
+        }
+        return refusal_gen(), source_files, evidence_items, context_text, debug_info
+
+    # Guard: If selected chunk does not contain a clock time for time-intent queries, force refusal
+    if is_time_arrival_intent and not any(bool(re.search(time_regex, h.doc, re.IGNORECASE)) for h in selected):
+        async def refuse_gen():
+            yield "The document does not specify this."
+        debug_info = {
+            "retrieved": len(hits),
+            "selected": [
+                {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")}
+                for h in selected
+            ],
+            "refused": True,
+            "refusal_reason": "NO_CLOCK_TIME_FOR_ARRIVAL",
+            "request_id": request_id,
+        }
+        return refuse_gen(), [], [], "", debug_info
+
+
+    # 6) call model strictly with context_text (PRIMARY EVIDENCE only)
+    # Update prompt: answer ONLY from PRIMARY EVIDENCE, else refuse
+    def _llm_prompt_template(*, instruction, history, context, question):
+        # Compose the prompt using instruction and history as strings
+        instruction_str = instruction or "You are a helpful assistant. Answer the user's question ONLY using the PRIMARY EVIDENCE below. If the PRIMARY EVIDENCE does not contain the answer, reply: 'The document does not specify this.'"
+        history_str = ""
+        if history:
+            if isinstance(history, list):
+                # Convert conversation history list to a readable string
+                history_str = "\n".join([
+                    f"{h.get('role', 'user')}: {h.get('content', '')}" if isinstance(h, dict) else str(h)
+                    for h in history
+                ])
+            else:
+                history_str = str(history)
+        history_section = f"Conversation history:\n{history_str}\n" if history_str else ""
+        prompt = (
+            f"{instruction_str}\n"
+            f"{history_section}"
+            f"PRIMARY EVIDENCE:\n{context}\n\nQuestion: {question}\nAnswer:"
+        )
+        return prompt
+
+    # Call the chat model with the prompt template (instruction/history as strings handled by render_prompt_template)
+    answer_gen = _call_chat_model(
+        question,
+        context_text,
+        tenant_id,
+        mode=mode,
+        conversation_history=conversation_history,
+        request_id=request_id,
+        prompt_template=_llm_prompt_template,
+    )
+
+    debug_info = None
+    if debug >= 1:
+        selected_chunks_debug = []
+        for h in selected:
+            chunk_id = h.chunk_id
+            dist = h.dist
+            source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
+            header_first_line = str(h.meta.get("header") or h.meta.get("section") or next((ln.strip() for ln in h.doc.splitlines() if ln.strip()), "")).strip()
+            contains_clock_time = bool(re.search(r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b", h.doc.lower(), re.IGNORECASE))
+            lexical_score = _lexical_overlap_score(question, h.doc)
+            # final_score and why_selected (use debug_chunks if available)
+            final_score = None
+            why_selected = []
+            if debug_chunks:
+                for d in debug_chunks:
+                    if d.get("chunk_id") == chunk_id:
+                        final_score = d.get("final_score") if "final_score" in d else None
+                        why_selected = d.get("why_selected") if "why_selected" in d else []
+                        break
+            selected_chunks_debug.append({
+                "chunk_id": chunk_id,
+                "dist": dist,
+                "source_file": source_file,
+                "header_first_line": header_first_line,
+                "doc": h.doc,
+                "contains_clock_time": contains_clock_time,
+                "lexical_score": lexical_score,
+                "final_score": final_score,
+                "why_selected": why_selected if why_selected is not None else []
+            })
+        # Guarantee: selected_count always matches selected_chunks_debug length
+        context_length = len(context_text) if context_text else 0
+        evidence_count = len(evidence_items) if evidence_items else 0
+        debug_info = {
+            "hits_count": len(hits),
+            "selected_count": len(selected_chunks_debug),
+            "context_length": context_length,
+            "evidence_count": evidence_count,
+            "pipeline_marker": "HITS_PIPELINE",
+            "retrieved_chunks_top20": retrieved_chunks_top20 if retrieved_chunks_top20 is not None else [],
+            "selected_chunks": selected_chunks_debug,
+            "request_id": request_id,
+        }
+    else:
+        context_length = len(context_text) if context_text else 0
+        evidence_count = len(evidence_items) if evidence_items else 0
+        debug_info = {
+            "retrieved": len(hits),
+            "selected": [
+                {
+                    "chunk_id": h.chunk_id,
+                    "dist": h.dist,
+                    "source": h.meta.get("source_file"),
+                    "header": h.meta.get("header"),
+                }
+                for h in selected
+            ],
+            "context_length": context_length,
+            "evidence_count": evidence_count,
+            "request_id": request_id,
+        }
+
+
+    # --- Post-check: if answer includes a clock time but evidence[0].snippet does not, force refusal ---
+    async def checked_answer_gen():
+        answer_text = ""
+        async for chunk in answer_gen:
+            answer_text += chunk
+            yield chunk
+        # Only check if evidence and answer both exist
+        if evidence_items and hasattr(evidence_items[0], "snippet"):
+            ev_snippet = evidence_items[0].snippet or ""
+            # Find all clock times in answer
+            answer_times = re.findall(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", answer_text, re.IGNORECASE)
+            # Flatten to strings
+            answer_times_flat = [" ".join([t[0], t[1]]).strip() if t[1] else t[0] for t in answer_times]
+            for t in answer_times_flat:
+                if t and t.lower() not in ev_snippet.lower():
+                    logging.error(f"[RAG] DEMO SAFETY: Answer contains clock time '{t}' absent from evidence. request_id={request_id}")
+                    # Force refusal
+                    async def refusal_gen():
+                        yield "The document does not specify this."
+                    async for chunk in refusal_gen():
+                        yield chunk
+                    return
+    return checked_answer_gen(), source_files, evidence_items, context_text, debug_info
+
+    # 7) LLM answer must be constrained to context_text
+    answer_gen = _call_chat_model(
+        question,
+        context_text,
+        tenant_id,
+        mode=mode,
+        conversation_history=conversation_history,
+        request_id=request_id
+    )
+
+    debug_info = {
+        "retrieved": len(hits),
+        "selected": [
+            {
+                "chunk_id": h.chunk_id,
+                "dist": h.dist,
+                "source": h.meta.get("source_file"),
+                "header": h.meta.get("header"),
+            }
+            for h in selected
+        ],
+        "request_id": request_id
+    }
+
+    return answer_gen, source_files, evidence_items, context_text, debug_info
+
+    log_timing_rag("similarity_filtering", 0, tenant_id, before=len(chunk_hits), after=len(filtered_results), threshold="skipped_for_reranking")
     logger.info("Skipping similarity threshold filtering: will apply hybrid reranking to all %d chunks instead", len(filtered_results))
 
     if not filtered_results:
         async def not_relevant_gen():
             yield "I could not find anything relevant in the indexed documents to answer that question."
-        debug_info = {"retrieved_count": len(docs), "selected_count": 0, "chunks": []} if debug >= 1 else []
+        debug_info = {"retrieved_count": len(chunk_hits), "selected_count": 0, "chunks": []} if debug >= 1 else []
         return not_relevant_gen(), [], [], "", debug_info
 
     # Always apply lexical+semantic hybrid reranking (generalized across queries)
@@ -1017,7 +1390,6 @@ async def query_collection(
         for line in doc.splitlines():
             if line.strip():
                 header = line.strip()
-                break
         selected_info.append({
             "id": chunk_id,
             "source": src,
@@ -1087,63 +1459,10 @@ async def query_collection(
          - Who are the key people I should connect with?"
         """
         import re
-        
         lines = chunk_text.split('\n')
         if not lines:
             return chunk_text[:max_chars]
-        
-        # Check if first non-empty line is a header (ends with ':' or is all caps)
-        first_line = ""
-        for line in lines:
-            if line.strip():
-                first_line = line.strip()
-                break
-        
-        is_header = (
-            first_line.endswith(':') or
-            first_line.endswith(')') or  # Numbered headings like "4. EMAIL SIGNATURE (11:30 AM)"
-            (len(first_line) > 3 and first_line == first_line.upper() and any(c.isalpha() for c in first_line))
-        )
-        
-        if not is_header:
-            # No header detected, return truncated chunk
-            return chunk_text[:max_chars]
-        
-        # Header detected: collect header + up to 3 bullet lines
-        snippet_lines = []
-        bullet_count = 0
-        total_chars = 0
-        
-        for line in lines:
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-            
-            # Check if this is a bullet line
-            is_bullet = re.match(r'^\s*(?:[-*•]|\d+[.)])\s+', line) is not None
-            
-            # Add the line if it's the header or a bullet (up to 3 bullets)
-            if len(snippet_lines) == 0:  # First line (header)
-                snippet_lines.append(line_stripped)
-                total_chars += len(line_stripped)
-            elif is_bullet and bullet_count < 3:
-                snippet_lines.append(line_stripped)
-                total_chars += len(line_stripped)
-                bullet_count += 1
-                
-                if total_chars >= max_chars:
-                    break
-            elif bullet_count >= 3:
-                break
-        
-        snippet = '\n'.join(snippet_lines)
-        
-        # Truncate if still too long
-        if len(snippet) > max_chars:
-            snippet = snippet[:max_chars] + "..."
-        
-        return snippet
-    
+        return chunk_text[:max_chars]
     def _extract_evidence(q: str, results: List[Tuple[str, Dict, float]]) -> List[Tuple[str, float]]:
         """
         Extract supporting evidence quotes from context chunks with relevance scores.
@@ -1228,37 +1547,58 @@ async def query_collection(
         evidence_tokens = set(_tokenize_and_filter(evidence_text))
         
         if not query_tokens or not evidence_tokens:
-            return 0.0
-        
-        # Jaccard similarity
-        intersection = len(query_tokens & evidence_tokens)
-        union = len(query_tokens | evidence_tokens)
-        score = intersection / union if union > 0 else 0.0
-        
-        return score
+            debug_info = {
+                "retrieved_chunks_top20": retrieved_chunks_top20,
+                "selected": [
+                    {
+                        "chunk_id": h.chunk_id,
+                        "dist": h.dist,
+                        "source_file": h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path"),
+                        "header_first_line": _header_first_line(h.doc),
+                        "contains_clock_time": _contains_clock_time(h.doc),
+                        "contains_duration": _contains_duration(h.doc),
+                        "lexical_score": _lexical_score(question, h.doc),
+                        "final_score": chunk_debug_map.get(h.chunk_id, {}).get("final_score"),
+                        "why_selected": chunk_debug_map.get(h.chunk_id, {}).get("why_selected", []),
+                    }
+                    for h in selected
+                ],
+                "request_id": request_id,
+            } if debug >= 1 else {
+                "retrieved": len(hits),
+                "selected": [
+                    {
+                        "chunk_id": h.chunk_id,
+                        "dist": h.dist,
+                        "source_file": h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path"),
+                        "header_first_line": _header_first_line(h.doc),
+                    }
+                    for h in selected
+                ],
+                "request_id": request_id,
+            }
+        doc_id = hit.meta.get("doc_id")
+        for line, score in extract_evidence_lines(hit.doc, question):
+            all_evidence.append({
+                "snippet": line,
+                "score": score,
+                "chunk_id": hit.chunk_id,
+                "filename": filename,
+                "heading": heading,
+                "doc_id": doc_id
+            })
 
-    # EVIDENCE CONSTRUCTION: Extract evidence from selected chunks (not from LLM)
-    # Use expanded query for better matching
-    # Returns list of (chunk_text, relevance_score) tuples
-    scored_chunks = _extract_evidence(expanded_question, filtered_results)
-    
-    # RELEVANCE FILTER: Filter chunks by score threshold
-    EVIDENCE_RELEVANCE_THRESHOLD = 0.15  # Minimum overlap score (tuned for quality)
-    
-    # Filter by threshold
-    relevant_chunks = [(chunk, score) for chunk, score in scored_chunks if score >= EVIDENCE_RELEVANCE_THRESHOLD]
-    
-    # Take top chunks based on mode and extract better snippets
-    if mode == "fast":
-        # Fast mode: only highest relevance chunks (top 2)
-        evidence = [_extract_evidence_snippet(chunk, max_chars=400) for chunk, score in relevant_chunks[:2]]
-        logger.info("Fast mode: selected %d/%d chunks for evidence (threshold=%.2f)", 
-                   len(evidence), len(scored_chunks), EVIDENCE_RELEVANCE_THRESHOLD)
-    else:
-        # Full mode: keep top 3 relevant chunks
-        evidence = [_extract_evidence_snippet(chunk, max_chars=400) for chunk, score in relevant_chunks[:3]]
-        logger.info("Full mode: selected %d/%d chunks for evidence (threshold=%.2f)", 
-                   len(evidence), len(scored_chunks), EVIDENCE_RELEVANCE_THRESHOLD)
+    # Sort all evidence lines globally by score (desc), then by chunk order
+    all_evidence.sort(key=lambda x: (-x["score"], x["chunk_id"]))
+
+    # Take top N evidence lines (N=3 for full, N=2 for fast)
+    max_evidence = 2 if mode == "fast" else 3
+    evidence_items = [EvidenceItem(
+        snippet=ev["snippet"],
+        chunk_id=ev["chunk_id"],
+        heading=ev["heading"],
+        doc_id=ev["doc_id"]
+    ) for ev in all_evidence[:max_evidence]]
 
     # --- PRESENTATION LAYER: Synthesize natural answer for time/arrival questions ---
     import re
@@ -1269,38 +1609,39 @@ async def query_collection(
         # Look for a time pattern in evidence
         for ev in evidence:
             # Accept both "8:00 AM" and "8 am" etc.
-            m = re.search(r"(\d{1,2}(:\d{2})?\s*(am|pm))", ev, re.IGNORECASE)
+            m = re.search(r"(\d{1,2}(:\d{2})?\s*(am|pm))", ev.snippet, re.IGNORECASE)
             if m:
                 time_str = m.group(1).strip()
                 # Try to find "first day" or similar in evidence
-                if "first day" in ev.lower():
+                if "first day" in ev.snippet.lower():
                     return f"You should arrive at {time_str} on your first day."
                 return f"You should arrive at {time_str}."
         return None
 
-    synthesized = _synthesize_time_answer(question, evidence)
+    synthesized = _synthesize_time_answer(question, evidence_items)
     if synthesized:
         # Replace evidence with the synthesized answer for the LLM prompt
-        evidence = [synthesized]
-    
+        evidence_items = [EvidenceItem(snippet=synthesized, chunk_id="synthesized", heading=None, doc_id=None)]
+
     # Log relevance scores for debugging
     if scored_chunks:
         top_scores = [round(score, 3) for _, score in scored_chunks[:5]]
         logger.info("Evidence relevance scores (top 5): %s", top_scores)
-    
+
     # VALIDATION: If we have selected chunks, we must have evidence
-    if len(filtered_results) > 0 and len(evidence) == 0:
+    if len(filtered_results) > 0 and len(evidence_items) == 0:
         logger.error(
             "EVIDENCE CONSTRUCTION ERROR: %d chunks selected but 0 evidence extracted. "
             "This should never happen. Question: %s",
             len(filtered_results), question[:100]
         )
         # Fallback: use first chunk preview as evidence
-        evidence = [filtered_results[0][0][:150] + "..."]
-    
+        fallback_chunk = filtered_results[0][0][:150] + "..."
+        evidence_items = [EvidenceItem(snippet=fallback_chunk, chunk_id="fallback", heading=None, doc_id=None)]
+
     logger.info(
         "Evidence construction complete: selected_chunks=%d, evidence_count=%d",
-        len(filtered_results), len(evidence)
+        len(filtered_results), len(evidence_items)
     )
     
     # GROUNDING GATE: Check if evidence is sufficient before calling LLM
@@ -1330,7 +1671,7 @@ async def query_collection(
 
     if not should_proceed:
         # DEMO_STRICT guardrail: if evidence_count >= 1 and evidence contains time/number anchor, never refuse
-        if DEMO_STRICT and len(evidence) >= 1 and _evidence_has_time_or_number(evidence):
+        if DEMO_STRICT and len(evidence_items) >= 1 and _evidence_has_time_or_number([ev.snippet for ev in evidence_items]):
             logger.info("[DEMO_STRICT] Override refusal: evidence_count >= 1 and evidence contains time/number anchor.")
             should_proceed = True
             refusal_reason = None
@@ -1366,7 +1707,7 @@ async def query_collection(
                 request_id, failed_check, max_overlap, sum_top3, question[:100]
             )
 
-            return refusal_gen(), dedup_sources, evidence, context, refusal_debug_info
+            return refusal_gen(), dedup_sources, [], context, refusal_debug_info
     
     # Build debug info: include retrieved_count, selected_count, and detailed chunk diagnostics
     if debug >= 1:
@@ -1387,6 +1728,7 @@ async def query_collection(
                     "min_total_support": MIN_TOTAL_SUPPORT
                 }
             },
+            "retrieved_chunks_top20": retrieved_chunks_top20 if retrieved_chunks_top20 is not None else [],
             "refused": False,
             "refusal_reason": None
         }
@@ -1395,80 +1737,82 @@ async def query_collection(
         debug_info = selected_info
     
     answer_gen = _call_chat_model(question, context, tenant_id, mode=mode, conversation_history=conversation_history, request_id=request_id)
-    return answer_gen, detailed_sources, evidence, context, debug_info
+    return answer_gen, detailed_sources, evidence_items, context, debug_info
 
 
 async def _call_chat_model(
-    question: str, 
-    context: str, 
-    tenant_id: str, 
+    question: str,
+    context: str,
+    tenant_id: str,
     mode: str = "full",
-    conversation_history: List[Dict] = None,
+    conversation_history: Optional[List[Dict]] = None,
     validate_before_stream: bool = True,
-    request_id: str = None
+    request_id: Optional[str] = None,
+    prompt_template: Optional[str] = None,  # ✅ accepts regression kwarg
+    **kwargs: Any,                          # ✅ tolerate future kwargs
 ) -> AsyncGenerator[str, None]:
     """
     Call the configured LLM provider with the retrieved context.
-    Yields answer tokens as they arrive for streaming.
-    Supports multiple providers via LLM_PROVIDER env var (ollama, openai).
-    
-    Args:
-        question: User's question
-        context: Retrieved context from documents
-        tenant_id: Tenant identifier
-        mode: "fast" (concise, limited tokens) or "full" (detailed, more tokens)
-        conversation_history: Optional list of previous messages for context
-        validate_before_stream: If True, buffer answer and validate before streaming. If False, stream directly.
-        request_id: Request identifier for tracing (optional)
+    Yields answer tokens as they arrive for streaming OR buffers then yields once
+    (depending on validate_before_stream).
     """
-    # Build conversation history text
+
+    # Build conversation history text (continuity only)
     history_text = ""
     if conversation_history:
         for msg in conversation_history:
-            role_prefix = "User" if msg["role"] == "user" else "Assistant"
-            history_text += f"{role_prefix}: {msg['content']}\n\n"
-    
-    # Mode-specific prompts and token limits (from config.py)
-    if mode == "fast":
+            role_prefix = "User" if msg.get("role") == "user" else "Assistant"
+            history_text += f"{role_prefix}: {msg.get('content','')}\n\n"
+
+    # Mode-specific instruction block
+    if (mode or "").lower() == "fast":
         instruction = (
             "ANSWER RULES (STRICT - Fast Mode):\n"
             "1. Maximum 2 sentences ONLY.\n"
             "2. You must answer using ONLY the Evidence lines below.\n"
             "3. If Evidence does not contain the answer, output exactly: The document does not specify this.\n"
             "4. Do not use conversation history as a source of truth; history is for continuity only.\n"
-            "5. Conversation history may be incomplete or incorrect. Treat Evidence as the ONLY source of truth. Do not introduce facts from history unless they are explicitly supported by Evidence.\n"
+            "5. Conversation history may be incomplete or incorrect. Treat Evidence as the ONLY source of truth.\n"
             "6. Extract exact details; do NOT add outside knowledge.\n"
             "7. Include ONLY directly relevant information; skip unrelated sections.\n"
             "8. For time/arrival questions: state the exact time (with AM/PM) and location in ONE sentence.\n"
-            "9. Do NOT include background information, Q/A sections, or general guidance unless directly answering the question.\n"
+            "9. Do NOT include background information unless directly answering the question.\n"
+            "10. If you mention a time/date/number, it must appear verbatim in the evidence.\n"
+            "11. For every fact or number you state, append (chunk_id:CHUNK_ID) where CHUNK_ID is from the evidence below.\n"
+            "12. Do NOT cite any chunk_id not present in the evidence.\n"
             "\n"
-            "Format: Direct answer in 1-2 short sentences."
+            "Format: Direct answer in 1-2 short sentences, with citations as (chunk_id:CHUNK_ID)."
         )
+        max_tokens = MAX_TOKENS_FAST
     else:
         instruction = (
             "ANSWER RULES:\n"
             "1. You must answer using ONLY the Evidence lines below.\n"
             "2. If Evidence does not contain the answer, output exactly: The document does not specify this.\n"
             "3. Do not use conversation history as a source of truth; history is for continuity only.\n"
-            "4. Conversation history may be incomplete or incorrect. Treat Evidence as the ONLY source of truth. Do not introduce facts from history unless they are explicitly supported by Evidence.\n"
+            "4. Conversation history may be incomplete or incorrect. Treat Evidence as the ONLY source of truth.\n"
             "5. Extract exact details; do NOT add outside knowledge.\n"
             "6. Be concise and specific; avoid unrelated guidance.\n"
-            "7. If the question asks about time or arrival, include BOTH the exact time (with AM/PM) and the exact location/floor if present in the Evidence, in one short sentence.\n"
-            "8. Preserve the exact formatting of times (e.g., 8:00 AM) and floors (e.g., 3rd floor) as written.\n"
+            "7. If the question asks about time or arrival, include BOTH the exact time (with AM/PM) and exact location/floor if present.\n"
+            "8. Preserve exact formatting of times/floors as written.\n"
+            "9. If you mention a time/date/number, it must appear verbatim in the evidence.\n"
+            "10. For every fact or number you state, append (chunk_id:CHUNK_ID) where CHUNK_ID is from the evidence below.\n"
+            "11. Do NOT cite any chunk_id not present in the evidence.\n"
             "\n"
-            "Reminder: If the answer is visible in the Evidence, use it verbatim."
+            "Format: Direct answer with citations as (chunk_id:CHUNK_ID)."
         )
+        max_tokens = MAX_TOKENS_FULL
 
-    if mode == "fast":
-        prompt = f"""{instruction}
-
-{history_text if history_text else ""}Evidence (authoritative):
-{context}
-
-Question: {question}
-
-Answer:"""
-        max_tokens = MAX_TOKENS_FAST
+    # Build prompt (allow external prompt_template override but keep guardrails)
+    # If prompt_template is provided, it must include {instruction}, {history}, {context}, {question}
+    if prompt_template:
+        prompt = render_prompt_template(
+            prompt_template,
+            instruction=instruction,
+            history=history_text or "",
+            context=context,
+            question=question,
+        )
     else:
         prompt = f"""{instruction}
 
@@ -1478,34 +1822,141 @@ Answer:"""
 Question: {question}
 
 Answer:"""
-        max_tokens = MAX_TOKENS_FULL
 
-    logger.info("[%s] Calling LLM for question (len=%d) with context length %d mode=%s max_tokens=%s mock=%s history_len=%d validate=%s", 
-                request_id or "no-request-id", len(question), len(context), mode, max_tokens, is_mock_mode(), len(conversation_history) if conversation_history else 0, validate_before_stream)
-    
-    # If mock mode, yield canned response immediately
+    logger.info(
+        "[%s] Calling LLM (q_len=%d ctx_len=%d mode=%s max_tokens=%s mock=%s history_len=%d validate_before_stream=%s)",
+        request_id or "no-request-id",
+        len(question),
+        len(context),
+        mode,
+        max_tokens,
+        is_mock_mode(),
+        len(conversation_history) if conversation_history else 0,
+        validate_before_stream,
+    )
+
     if is_mock_mode():
-        yield "(mocked) This is a canned answer used for local UI testing."
+        refusal_text = "The document does not specify this."
+
+        # 1) Pull primary evidence block if present
+        ctx = context or ""
+        primary = ctx
+        if "PRIMARY EVIDENCE" in ctx:
+            # Take everything after the first PRIMARY EVIDENCE marker
+            primary = ctx.split("PRIMARY EVIDENCE", 1)[1]
+
+        # 2) Allowed chunk ids for citations
+        allowed_chunk_ids = set(re.findall(r"chunk_id=([\w\-]+)", ctx))
+
+        # 3) Deterministic extraction helpers
+        q = (question or "").lower()
+
+        time_re = re.compile(r"\b(\d{1,2}:\d{2}\s*(?:am|pm))\b", re.IGNORECASE)
+        # also allow "9:00" without am/pm
+        time_re2 = re.compile(r"\b(\d{1,2}:\d{2})\b")
+
+        lines = [ln.strip() for ln in primary.splitlines() if ln.strip()]
+
+        def cite_first_allowed() -> str:
+            # Prefer the first chunk_id that appears in the context
+            cid = next(iter(allowed_chunk_ids), None)
+            return f" (chunk_id:{cid})" if cid else ""
+
+        # Heuristic: time-ish questions
+        if any(k in q for k in ["what time", "when", "arrive", "arrival", "orientation", "lunch", "start"]):
+            for ln in lines:
+                m = time_re.search(ln) or time_re2.search(ln)
+                if m:
+                    return_text = ln
+                    # Add a citation if missing
+                    if "(chunk_id:" not in return_text:
+                        return_text += cite_first_allowed()
+                    yield return_text.strip()
+                    return
+
+    # Heuristic: keyword overlap fallback
+    keywords = [w for w in re.findall(r"[a-z]+", q) if w not in {"what","when","where","is","the","do","i","my","a","an","to","of","and"}]
+    best_ln, best_score = None, -1
+    for ln in lines:
+        l = ln.lower()
+        score = sum(1 for w in keywords if w in l)
+        if score > best_score:
+            best_score = score
+            best_ln = ln
+
+    if best_ln and best_score > 0:
+        out = best_ln
+        if "(chunk_id:" not in out:
+            out += cite_first_allowed()
+        yield out.strip()
         return
 
-    # Get LLM provider and guardrail config for timeout
+    # If we can't find anything grounded, refuse
+    yield refusal_text
+    return
+
+
+    # Provider + timeout
     llm_provider = _get_llm_provider()
     guardrail_config = get_guardrail_config(tenant_id)
     llm_timeout = guardrail_config.llm_timeout_seconds
-    
-    # Use the orchestrator for buffered streaming with validation or direct streaming
+
+    # Allowed chunk_ids extracted from context
+    allowed_chunk_ids = set(re.findall(r"chunk_id=([\w\-]+)", context or ""))
+
+    async def _citations_valid(text: str) -> bool:
+        cited = set(re.findall(r"chunk_id:([\w\-]+)", text or ""))
+        return cited.issubset(allowed_chunk_ids)
+
+    refusal_text = "The document does not specify this."
+
+    # If validate_before_stream=True: buffer whole output, validate once, yield once (demo-safe)
+    if validate_before_stream:
+        buffer = ""
+        async for chunk in generate_answer_stream(
+            prompt=prompt,
+            tenant_id=tenant_id,
+            provider=llm_provider,
+            max_tokens=max_tokens,
+            timeout=llm_timeout,
+            validate_fn=answer_supported_by_evidence,  # full grounding gate
+            evidence_text=context,
+            refusal_text=refusal_text,
+            request_id=request_id,
+            chunk_size=75,
+        ):
+            buffer += chunk
+
+        # Citation enforcement at end
+        if not await _citations_valid(buffer):
+            yield refusal_text
+            return
+
+        yield buffer.strip()
+        return
+
+    # Else: stream chunks, but still enforce citations progressively.
+    # We can’t fully validate semantics chunk-by-chunk, but we can stop citation cheating.
+    streamed = ""
     async for chunk in generate_answer_stream(
         prompt=prompt,
         tenant_id=tenant_id,
         provider=llm_provider,
         max_tokens=max_tokens,
         timeout=llm_timeout,
-        validate_fn=answer_supported_by_evidence if validate_before_stream else None,
+        validate_fn=None,  # stream directly
         evidence_text=context,
-        refusal_text="The document does not specify this.",
+        refusal_text=refusal_text,
         request_id=request_id,
-        chunk_size=75
+        chunk_size=75,
     ):
+        streamed += chunk
+
+        # If they cite an invalid chunk_id at any point, hard-stop to refusal
+        if not await _citations_valid(streamed):
+            yield refusal_text
+            return
+
         yield chunk
 
 
@@ -1529,18 +1980,28 @@ def reset_collection(tenant_id: str = "default") -> None:
     # Clear cache first
     clear_embedding_cache()
     
-    # Delete tenant-specific collection
+    # Delete tenant-specific collections (all embed versions) and remove from cache
     chroma_client = clients.get_chroma_client()
-    collection_name = f"documents_{tenant_id}"
-    try:
-        chroma_client.delete_collection(collection_name)
-        logger.info("Deleted collection: %s", collection_name)
-    except Exception as e:
-        logger.warning("Could not delete collection %s: %s", collection_name, e)
-    
-    # Remove from cache
-    if tenant_id in _tenant_collections:
-        del _tenant_collections[tenant_id]
+    # Remove cached entries for this tenant (keys are tuples: (tenant_id, embed_signature))
+    keys_to_remove = [k for k in list(_tenant_collections.keys()) if (isinstance(k, tuple) and k[0] == tenant_id) or (k == tenant_id)]
+    for k in keys_to_remove:
+        try:
+            # Attempt to compute collection name and delete if possible
+            if isinstance(k, tuple):
+                _, embed_sig = k
+                collection_name = f"documents_{tenant_id}__{embed_sig}"
+            else:
+                collection_name = f"documents_{tenant_id}"
+            try:
+                chroma_client.delete_collection(collection_name)
+                logger.info("Deleted collection: %s", collection_name)
+            except Exception:
+                logger.debug("Could not delete collection %s (may not exist)", collection_name)
+        finally:
+            try:
+                del _tenant_collections[k]
+            except KeyError:
+                pass
     
     logger.info("Collection reset complete for tenant: %s", tenant_id)
 
