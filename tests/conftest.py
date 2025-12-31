@@ -2,8 +2,10 @@ import os
 import sys
 import shutil
 import logging
+import json
 import pytest
 import httpx
+from pathlib import Path
 from asgi_lifespan import LifespanManager
 
 # Ensure repo root is importable
@@ -48,6 +50,11 @@ async def seed_vectorstore():
     if hasattr(rag_service, "reset_llm_provider_for_tests"):
         rag_service.reset_llm_provider_for_tests()
 
+    # Ensure CI/mock mode + allow chroma indexing during seeding
+    os.environ["APP_MODE"] = "ci"
+    os.environ["CI"] = "true"
+    os.environ["ALLOW_CHROMA_INDEXING_IN_MOCK"] = "true"
+
     # Clean slate
     if os.path.exists(VECTOR_DIR_TEST):
         shutil.rmtree(VECTOR_DIR_TEST)
@@ -56,17 +63,56 @@ async def seed_vectorstore():
     # Init Chroma
     clients.initialize_chroma_client()
 
-    # Load onboarding doc
-    doc_path = os.path.join(REPO_ROOT, "testdata", "onboarding", "onboarding_guide.txt")
-    text = load_file_to_text(doc_path)
-    chunks = chunk_text(text)
+    docs_dir = Path(REPO_ROOT) / "tests" / "testdata" / "docs"
+    manifest_path = docs_dir / "manifest.json"
+    assert docs_dir.exists(), f"Missing docs folder: {docs_dir}"
+    assert manifest_path.exists(), f"Missing manifest.json: {manifest_path}"
 
-    # Seed using the real pipeline (async)
-    await rag_service.add_documents("default", chunks, "onboarding_guide.txt")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_by_file = {m["file"]: m for m in manifest}
 
-    # Assert using the same collection accessor as retrieval
+    # Deterministic ingestion order
+    allowed_ext = {".txt", ".md", ".pdf", ".docx"}
+    paths = sorted([p for p in docs_dir.iterdir() if p.suffix.lower() in allowed_ext])
+
+    total_chunks_indexed = 0
+    per_file_counts = {}
+
+    for path in paths:
+        filename = path.name
+
+        # Extract text using your production ingestion code
+        text = load_file_to_text(str(path))
+
+        # Fail fast: ensure extraction is sane (manifest anchors must exist)
+        spec = manifest_by_file.get(filename)
+        assert spec is not None, f"{filename} missing from manifest.json"
+        for needle in spec.get("must_contain", []):
+            assert needle in text, f"[{filename}] extraction missing required token: {needle}"
+
+        # Chunk using production chunker
+        chunks = chunk_text(text)
+        assert chunks, f"[{filename}] produced 0 chunks"
+
+        # Seed via production add_documents
+        n = await rag_service.add_documents("default", chunks, filename)
+        per_file_counts[filename] = n
+        total_chunks_indexed += n
+
+        # Sanity: if seeding returns 0, something is wrong (unless your add_documents is skipping)
+        assert n > 0, f"[{filename}] add_documents returned 0 chunks indexed"
+
+    # Assert each file contributed chunks
+    for filename, count in per_file_counts.items():
+        assert count > 0, f"File {filename} contributed 0 chunks"
+
+    # Assert seeded using same collection accessor as retrieval
     col = await rag_service.get_collection_async("default")
     assert col.count() > 0, "Chroma collection not seeded!"
+    assert total_chunks_indexed > 0, "No chunks indexed across all docs!"
+
+    # Optional: print counts (useful when tuning chunking)
+    # print("Seeded chunks per file:", per_file_counts)
 
     yield
 

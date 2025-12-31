@@ -1,0 +1,12 @@
+Benefits Overview (Test Fixture)
+Version: 3.0
+
+PTO
+- New hires receive 10 days of PTO per year.
+- PTO accrues monthly.
+
+HEALTH INSURANCE
+- Health insurance eligibility begins after 30 days.
+- Plan options: Bronze, Silver, Gold.
+
+Unique anchor: UNIQUE_TOKEN_BENEFITS_55AA01

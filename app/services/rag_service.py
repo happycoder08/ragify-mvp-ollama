@@ -1874,26 +1874,26 @@ Answer:"""
                     yield return_text.strip()
                     return
 
-    # Heuristic: keyword overlap fallback
-    keywords = [w for w in re.findall(r"[a-z]+", q) if w not in {"what","when","where","is","the","do","i","my","a","an","to","of","and"}]
-    best_ln, best_score = None, -1
-    for ln in lines:
-        l = ln.lower()
-        score = sum(1 for w in keywords if w in l)
-        if score > best_score:
-            best_score = score
-            best_ln = ln
+        # Heuristic: keyword overlap fallback
+        keywords = [w for w in re.findall(r"[a-z]+", q) if w not in {"what","when","where","is","the","do","i","my","a","an","to","of","and"}]
+        best_ln, best_score = None, -1
+        for ln in lines:
+            l = ln.lower()
+            score = sum(1 for w in keywords if w in l)
+            if score > best_score:
+                best_score = score
+                best_ln = ln
 
-    if best_ln and best_score > 0:
-        out = best_ln
-        if "(chunk_id:" not in out:
-            out += cite_first_allowed()
-        yield out.strip()
+        if best_ln and best_score > 0:
+            out = best_ln
+            if "(chunk_id:" not in out:
+                out += cite_first_allowed()
+            yield out.strip()
+            return
+
+        # If we can't find anything grounded, refuse
+        yield refusal_text
         return
-
-    # If we can't find anything grounded, refuse
-    yield refusal_text
-    return
 
 
     # Provider + timeout

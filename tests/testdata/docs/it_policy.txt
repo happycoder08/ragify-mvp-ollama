@@ -1,0 +1,18 @@
+IT Policy (Test Fixture)
+Version: 2.1
+
+WIFI
+- WiFi network name (SSID): RAGIFY-GUEST
+- WiFi password: WIFI_PASSWORD: RAGIFY-1234
+- If you see "RAGIFY-GUEST-5G" use the same password.
+
+VPN
+- VPN is required for access to internal tools.
+- VPN setup uses profile name: RAGIFY-VPN
+- If VPN fails, contact IT at it-help@example.com.
+
+IMPORTANT
+- Do NOT share passwords in public channels.
+- "WiFi passcode" and "WiFi password" are equivalent terms in this document.
+
+Unique anchor: UNIQUE_TOKEN_ITPOLICY_19D2B8

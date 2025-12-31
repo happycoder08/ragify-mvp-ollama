@@ -1,0 +1,60 @@
+[
+  {
+    "file": "onboarding_guide.txt",
+    "must_contain": [
+      "8:00 AM",
+      "9:00 AM",
+      "12:00 PM",
+      "3rd floor",
+      "UNIQUE_TOKEN_ONBOARDING_7F3A9C"
+    ]
+  },
+  {
+    "file": "facilities_parking.md",
+    "must_contain": [
+      "PARK-4421",
+      "business casual",
+      "UNIQUE_TOKEN_FACILITIES_2C91E0"
+    ]
+  },
+  {
+    "file": "it_policy.txt",
+    "must_contain": [
+      "WIFI_PASSWORD: RAGIFY-1234",
+      "RAGIFY-VPN",
+      "UNIQUE_TOKEN_ITPOLICY_19D2B8"
+    ]
+  },
+  {
+    "file": "benefits_overview.txt",
+    "must_contain": [
+      "10 days",
+      "after 30 days",
+      "UNIQUE_TOKEN_BENEFITS_55AA01"
+    ]
+  },
+  {
+    "file": "employee_handbook_excerpt.pdf",
+    "must_contain": [
+      "10:30 AM",
+      "Unique anchor: UNIQUE_TOKEN_PDF_88C0D1",
+      "Unique anchor: UNIQUE_TOKEN_PDF_2_1A7B4F"
+    ]
+  },
+  {
+    "file": "onboarding_checklist.docx",
+    "must_contain": [
+      "reception",
+      "9:00 AM",
+      "Unique anchor: UNIQUE_TOKEN_DOCX_6F2D9A"
+    ]
+  },
+  {
+    "file": "edge_cases_chunking.txt",
+    "must_contain": [
+      "ANCHOR_SEQ_START",
+      "ANCHOR_SEQ_END",
+      "UNIQUE_TOKEN_EDGE_0B77CC"
+    ]
+  }
+]
