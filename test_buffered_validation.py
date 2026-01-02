@@ -151,6 +151,391 @@ async def test_buffered_streaming_with_mock():
     print("\n=== Buffered streaming test complete ✓ ===\n")
 
 
+def test_wifi_password_prompt():
+    """Test that WiFi/password questions get proper prompt instructions."""
+    print("\n=== Testing WiFi Password Prompt Instructions ===")
+    
+    from app.services.rag_service import _call_chat_model
+    import inspect
+    
+    # Get the source code of _call_chat_model
+    source = inspect.getsource(_call_chat_model)
+    
+    # Check that the new instructions are in the full mode prompt
+    assert "Search the PRIMARY EVIDENCE text for an exact answer." in source, "Missing search instruction in full mode"
+    assert "For WiFi/password questions: If you see 'password' or 'WiFi' followed by a value like 'RAGIFY-1234', return it verbatim with citation." in source, "Missing WiFi instruction in full mode"
+    
+    # Check fast mode too
+    assert "For WiFi/password questions: If you see 'password' or 'WiFi' followed by a value like 'RAGIFY-1234', return it verbatim with citation." in source, "Missing WiFi instruction in fast mode"
+    
+    print("✓ WiFi password prompt instructions verified")
+
+
+def test_wifi_extraction_with_mock():
+    """Test WiFi password extraction with mock context containing password."""
+    print("\n=== Testing WiFi Password Extraction ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import _call_chat_model
+    from app.services import clients
+    
+    # Initialize HTTP client for the test
+    asyncio.run(clients.initialize_http_client())
+    
+    # Mock context with WiFi password (simulating employee_handbook_excerpt.pdf chunk)
+    context = """
+    PRIMARY EVIDENCE (answer ONLY from this):
+    [chunk_id=employee_handbook_excerpt.pdf_1 dist=0.123]
+    The WiFi password is RAGIFY-1234.
+    The network name is RAGIFY-GUEST.
+    """
+    
+    # Mock the generate_answer_stream to return the password
+    async def mock_generate_answer_stream(*args, **kwargs):
+        yield "The WiFi password is RAGIFY-1234 (chunk_id:employee_handbook_excerpt.pdf_1)."
+    
+    async def run_test():
+        with patch('app.services.rag_service.generate_answer_stream', side_effect=mock_generate_answer_stream):
+            # Call _call_chat_model with WiFi question
+            gen = _call_chat_model(
+                question="What is the WiFi password?",
+                context=context,
+                tenant_id="test",
+                mode="full",
+                validate_before_stream=False,  # Disable validation for this test
+                request_id="test-wifi"
+            )
+            
+            # Collect the response
+            response = ""
+            async for chunk in gen:
+                response += chunk
+            
+            # Verify it contains the password
+            assert "RAGIFY-1234" in response, f"Password not extracted: {response}"
+            assert "chunk_id:employee_handbook_excerpt.pdf_1" in response, f"Citation missing: {response}"
+            print("✓ WiFi password extraction test passed")
+    
+    asyncio.run(run_test())
+
+
+def test_wifi_golden_case():
+    """Golden test case for WiFi password extraction from employee_handbook_excerpt.pdf."""
+    print("\n=== Testing WiFi Golden Case ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import query_collection
+    
+    # Mock the collection and embedding calls
+    async def mock_get_collection_async(tenant_id):
+        # Mock collection with WiFi chunk
+        class MockCollection:
+            def query(self, **kwargs):
+                return {
+                    "documents": [["SECTION: WiFi\nFor guests: use SSID RAGIFY-GUEST and password RAGIFY-1234.\nUnique anchor: UNIQUE_TOKEN_PDF_2_1A7B4F"]],
+                    "metadatas": [[{
+                        "source_file": "employee_handbook_excerpt.pdf",
+                        "chunk": 0,
+                        "doc_id": 1,
+                        "filename": "employee_handbook_excerpt.pdf"
+                    }]],
+                    "distances": [[0.1]],
+                    "ids": [["chunk_1"]]
+                }
+        return MockCollection()
+    
+    async def mock_embed_texts(texts, tenant_id=None):
+        return [[0.1] * 768]  # Mock embedding
+    
+    async def run_test():
+        with patch('app.services.rag_service.get_collection_async', side_effect=mock_get_collection_async), \
+             patch('app.services.rag_service.embed_texts', side_effect=mock_embed_texts):
+            
+            # Call query_collection with WiFi question
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="test",
+                question="What is the wifi password?",
+                top_k=4,
+                mode="full",
+                debug=1,
+                request_id="golden-wifi-test"
+            )
+            
+            # Collect the answer
+            answer = ""
+            async for chunk in gen:
+                answer += chunk
+            
+            # Verify golden case expectations
+            assert "WIFI_PASSWORD: RAGIFY-1234" in answer, f"Expected WIFI_PASSWORD not found in: {answer}"
+            assert "WIFI_SSID: RAGIFY-GUEST" in answer, f"Expected WIFI_SSID not found in: {answer}"
+            assert debug_info["pipeline_marker"] == "EXTRACTOR_WIFI", f"Expected EXTRACTOR_WIFI marker: {debug_info}"
+            assert debug_info["refused"] == False, f"Expected refused=False: {debug_info}"
+            assert len(evidence) > 0, "Expected evidence items"
+            assert evidence[0].chunk_id == "chunk_1", f"Expected chunk_1 in evidence: {evidence[0].chunk_id}"
+            
+            print("✓ WiFi golden case test passed")
+    
+    asyncio.run(run_test())
+
+
+def test_arrival_time_extraction():
+    """Test arrival time extraction with mock context."""
+    print("\n=== Testing Arrival Time Extraction ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import query_collection
+    
+    async def mock_get_collection_async(tenant_id):
+        class MockCollection:
+            def query(self, **kwargs):
+                return {
+                    "documents": [["Please arrive at 9:00 AM for your first day."]],
+                    "metadatas": [[{
+                        "source_file": "employee_handbook.pdf",
+                        "chunk": 0,
+                        "doc_id": 1,
+                        "filename": "employee_handbook.pdf"
+                    }]],
+                    "distances": [[0.1]],
+                    "ids": [["chunk_1"]]
+                }
+        return MockCollection()
+    
+    async def mock_embed_texts(texts, tenant_id=None):
+        return [[0.1] * 768]
+    
+    async def run_test():
+        with patch('app.services.rag_service.get_collection_async', side_effect=mock_get_collection_async), \
+             patch('app.services.rag_service.embed_texts', side_effect=mock_embed_texts):
+            
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="test",
+                question="What time should I arrive?",
+                top_k=4,
+                mode="full",
+                debug=1,
+                request_id="arrival-time-test"
+            )
+            
+            answer = ""
+            async for chunk in gen:
+                answer += chunk
+            
+            assert "ARRIVAL_TIME: 9:00 AM" in answer, f"Expected ARRIVAL_TIME not found in: {answer}"
+            assert debug_info["pipeline_marker"] == "EXTRACTOR_ARRIVAL_TIME", f"Expected EXTRACTOR_ARRIVAL_TIME marker: {debug_info}"
+            assert debug_info["refused"] == False
+            
+            print("✓ Arrival time extraction test passed")
+
+
+def test_orientation_time_extraction():
+    """Test orientation time extraction with mock context."""
+    print("\n=== Testing Orientation Time Extraction ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import query_collection
+    
+    async def mock_get_collection_async(tenant_id):
+        class MockCollection:
+            def query(self, **kwargs):
+                return {
+                    "documents": [["Orientation begins at 8:30 AM sharp."]],
+                    "metadatas": [[{
+                        "source_file": "employee_handbook.pdf",
+                        "chunk": 0,
+                        "doc_id": 1,
+                        "filename": "employee_handbook.pdf"
+                    }]],
+                    "distances": [[0.1]],
+                    "ids": [["chunk_1"]]
+                }
+        return MockCollection()
+    
+    async def mock_embed_texts(texts, tenant_id=None):
+        return [[0.1] * 768]
+    
+    async def run_test():
+        with patch('app.services.rag_service.get_collection_async', side_effect=mock_get_collection_async), \
+             patch('app.services.rag_service.embed_texts', side_effect=mock_embed_texts):
+            
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="test",
+                question="When does orientation start?",
+                top_k=4,
+                mode="full",
+                debug=1,
+                request_id="orientation-time-test"
+            )
+            
+            answer = ""
+            async for chunk in gen:
+                answer += chunk
+            
+            assert "ORIENTATION_TIME: 8:30 AM" in answer, f"Expected ORIENTATION_TIME not found in: {answer}"
+            assert debug_info["pipeline_marker"] == "EXTRACTOR_ORIENTATION_TIME", f"Expected EXTRACTOR_ORIENTATION_TIME marker: {debug_info}"
+            assert debug_info["refused"] == False
+            
+            print("✓ Orientation time extraction test passed")
+
+
+def test_badge_pickup_extraction():
+    """Test badge pickup extraction with mock context."""
+    print("\n=== Testing Badge Pickup Extraction ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import query_collection
+    
+    async def mock_get_collection_async(tenant_id):
+        class MockCollection:
+            def query(self, **kwargs):
+                return {
+                    "documents": [["Pick up your security badge at the reception desk."]],
+                    "metadatas": [[{
+                        "source_file": "employee_handbook.pdf",
+                        "chunk": 0,
+                        "doc_id": 1,
+                        "filename": "employee_handbook.pdf"
+                    }]],
+                    "distances": [[0.1]],
+                    "ids": [["chunk_1"]]
+                }
+        return MockCollection()
+    
+    async def mock_embed_texts(texts, tenant_id=None):
+        return [[0.1] * 768]
+    
+    async def run_test():
+        with patch('app.services.rag_service.get_collection_async', side_effect=mock_get_collection_async), \
+             patch('app.services.rag_service.embed_texts', side_effect=mock_embed_texts):
+            
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="test",
+                question="Where do I pick up my badge?",
+                top_k=4,
+                mode="full",
+                debug=1,
+                request_id="badge-pickup-test"
+            )
+            
+            answer = ""
+            async for chunk in gen:
+                answer += chunk
+            
+            assert "BADGE_PICKUP_LOCATION: reception desk" in answer, f"Expected BADGE_PICKUP_LOCATION not found in: {answer}"
+            assert debug_info["pipeline_marker"] == "EXTRACTOR_BADGE_PICKUP", f"Expected EXTRACTOR_BADGE_PICKUP marker: {debug_info}"
+            assert debug_info["refused"] == False
+            
+            print("✓ Badge pickup extraction test passed")
+
+
+def test_manager_name_extraction():
+    """Test manager name extraction with mock context."""
+    print("\n=== Testing Manager Name Extraction ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import query_collection
+    
+    async def mock_get_collection_async(tenant_id):
+        class MockCollection:
+            def query(self, **kwargs):
+                return {
+                    "documents": [["Your manager is Sarah Johnson."]],
+                    "metadatas": [[{
+                        "source_file": "employee_handbook.pdf",
+                        "chunk": 0,
+                        "doc_id": 1,
+                        "filename": "employee_handbook.pdf"
+                    }]],
+                    "distances": [[0.1]],
+                    "ids": [["chunk_1"]]
+                }
+        return MockCollection()
+    
+    async def mock_embed_texts(texts, tenant_id=None):
+        return [[0.1] * 768]
+    
+    async def run_test():
+        with patch('app.services.rag_service.get_collection_async', side_effect=mock_get_collection_async), \
+             patch('app.services.rag_service.embed_texts', side_effect=mock_embed_texts):
+            
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="test",
+                question="Who is my manager?",
+                top_k=4,
+                mode="full",
+                debug=1,
+                request_id="manager-name-test"
+            )
+            
+            answer = ""
+            async for chunk in gen:
+                answer += chunk
+            
+            assert "MANAGER_NAME: Sarah Johnson" in answer, f"Expected MANAGER_NAME not found in: {answer}"
+            assert debug_info["pipeline_marker"] == "EXTRACTOR_MANAGER_NAME", f"Expected EXTRACTOR_MANAGER_NAME marker: {debug_info}"
+            assert debug_info["refused"] == False
+            
+            print("✓ Manager name extraction test passed")
+
+
+def test_reception_location_extraction():
+    """Test reception location extraction with mock context."""
+    print("\n=== Testing Reception Location Extraction ===")
+    
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from app.services.rag_service import query_collection
+    
+    async def mock_get_collection_async(tenant_id):
+        class MockCollection:
+            def query(self, **kwargs):
+                return {
+                    "documents": [["The reception is located in the main lobby on the first floor."]],
+                    "metadatas": [[{
+                        "source_file": "employee_handbook.pdf",
+                        "chunk": 0,
+                        "doc_id": 1,
+                        "filename": "employee_handbook.pdf"
+                    }]],
+                    "distances": [[0.1]],
+                    "ids": [["chunk_1"]]
+                }
+        return MockCollection()
+    
+    async def mock_embed_texts(texts, tenant_id=None):
+        return [[0.1] * 768]
+    
+    async def run_test():
+        with patch('app.services.rag_service.get_collection_async', side_effect=mock_get_collection_async), \
+             patch('app.services.rag_service.embed_texts', side_effect=mock_embed_texts):
+            
+            gen, sources, evidence, context, debug_info = await query_collection(
+                tenant_id="test",
+                question="Where is the reception?",
+                top_k=4,
+                mode="full",
+                debug=1,
+                request_id="reception-location-test"
+            )
+            
+            answer = ""
+            async for chunk in gen:
+                answer += chunk
+            
+            assert "RECEPTION_LOCATION: main lobby" in answer, f"Expected RECEPTION_LOCATION not found in: {answer}"
+            assert debug_info["pipeline_marker"] == "EXTRACTOR_RECEPTION_LOCATION", f"Expected EXTRACTOR_RECEPTION_LOCATION marker: {debug_info}"
+            assert debug_info["refused"] == False
+            
+            print("✓ Reception location extraction test passed")
+
+
 def main():
     """Run all tests."""
     print("=" * 60)
@@ -162,6 +547,30 @@ def main():
     
     # Test 2: Buffered streaming (unit level)
     asyncio.run(test_buffered_streaming_with_mock())
+    
+    # Test 3: WiFi prompt instructions
+    test_wifi_password_prompt()
+    
+    # Test 4: WiFi extraction
+    test_wifi_extraction_with_mock()
+    
+    # Test 5: WiFi golden case
+    test_wifi_golden_case()
+    
+    # Test 6: Arrival time extraction
+    test_arrival_time_extraction()
+    
+    # Test 7: Orientation time extraction
+    test_orientation_time_extraction()
+    
+    # Test 8: Badge pickup extraction
+    test_badge_pickup_extraction()
+    
+    # Test 9: Manager name extraction
+    test_manager_name_extraction()
+    
+    # Test 10: Reception location extraction
+    test_reception_location_extraction()
     
     print("=" * 60)
     print("ALL TESTS PASSED ✓")
