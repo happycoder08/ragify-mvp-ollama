@@ -945,6 +945,35 @@ async def query_collection(
     debug: int = 0,
     request_id: str | None = None,
 ):
+    # Determine answer schema from question
+    def _determine_answer_schema(q: str) -> AnswerSchema:
+        q_lower = q.lower()
+        
+        # Check for CHECKLIST_PROCEDURE (highest priority)
+        if any(phrase in q_lower for phrase in ["what do i do", "steps", "how do i"]):
+            return AnswerSchema.CHECKLIST_PROCEDURE
+        
+        # Check for POLICY_EXCERPT
+        if any(word in q_lower for word in ["policy", "allowed", "required"]):
+            return AnswerSchema.POLICY_EXCERPT
+        
+        # Check for FACT_SINGLE
+        if q_lower.startswith(("what time", "where", "who", "what is")):
+            return AnswerSchema.FACT_SINGLE
+        
+        # Check for BOOLEAN_SPECIFIED
+        if q_lower.startswith(("is ", "are ")):
+            return AnswerSchema.BOOLEAN_SPECIFIED
+        
+        # Check for NOT_FOUND_EXPLICIT
+        if any(word in q_lower for word in ["mentioned", "specified"]):
+            return AnswerSchema.NOT_FOUND_EXPLICIT
+        
+        # Default fallback
+        return AnswerSchema.FACT_SINGLE
+    
+    answer_schema = _determine_answer_schema(question)
+
     # --- Time-arrival and location intent detection ---
     time_arrival_keywords = [
         "when should i arrive",
@@ -1414,7 +1443,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "refused": False,
             "pipeline_marker": "EXTRACTOR_BADGE_PICKUP",
             "request_id": request_id,
-            "answer_schema": None,  # Will be set by pipeline logic
+            "answer_schema": answer_schema,
         }
         
         return badge_pickup_gen(), source_files, evidence_items, context_text, debug_info
@@ -1440,7 +1469,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
                 "refused": False,
                 "pipeline_marker": "EXTRACTOR_MANAGER_NAME",
                 "request_id": request_id,
-                "answer_schema": None,  # Will be set by pipeline logic
+                "answer_schema": answer_schema,
             }
             
             return manager_name_gen(), source_files, evidence_items, context_text, debug_info
@@ -1642,7 +1671,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "retrieved_chunks_top20": retrieved_chunks_top20 if retrieved_chunks_top20 is not None else [],
             "selected_chunks": selected_chunks_debug,
             "request_id": request_id,
-            "answer_schema": None,  # Will be set by pipeline logic
+            "answer_schema": answer_schema,
         }
     else:
         context_length = len(context_text) if context_text else 0
@@ -1671,7 +1700,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "context_length": context_length,
             "evidence_count": evidence_count,
             "request_id": request_id,
-            "answer_schema": None,  # Will be set by pipeline logic
+            "answer_schema": answer_schema,
         }
 
 
