@@ -46,15 +46,37 @@ A production-ready Retrieval-Augmented Generation (RAG) system with **multi-tena
 - **Password Hashing**: bcrypt with 12 rounds for secure password storage
 - **Protected Endpoints**: All document operations require authentication
 
-### Document Management
-- **Upload Tracking**: PostgreSQL records for all uploaded documents
-- **Status Monitoring**: Track indexing progress (indexing, indexed, failed)
-- **Error Handling**: Detailed error messages for failed operations
+### Advanced RAG Capabilities
+- **Intelligent Question Classification**: Automatic detection of broad vs. specific questions
+- **Context Expansion**: Adjacent chunk inclusion for comprehensive answers (e.g., "First Day" checklists)
+- **Diverse Retrieval**: MMR (Maximal Marginal Relevance) selection for balanced context
+- **Evidence-Based Responses**: Strict citation requirements with chunk ID references
+- **Deterministic Extractors**: Specialized handling for common questions:
+  - Badge pickup locations
+  - Manager/supervisor names
+  - Reception/front desk locations
+- **Hybrid Scoring**: Combines lexical overlap and semantic similarity for optimal retrieval
+- **Coverage Assurance**: Minimum context thresholds (1500+ chars for broad questions)
+- **Fallback Query Rewriting**: Automatic query enhancement for better document matching
 
-### RAG Capabilities
-- **Semantic Search**: Vector-based document retrieval using Ollama embeddings
+### Document Processing
+- **Multi-Format Support**: PDF, DOCX, and TXT file processing
+- **Smart Chunking**: Character-based segmentation with configurable overlap (800 chars + 200 overlap)
+- **Metadata Preservation**: Header extraction, source tracking, and chunk indexing
+- **Upload Tracking**: PostgreSQL records with indexing status and error handling
+
+### AI & Response Features
 - **Streaming Responses**: Real-time answer generation with source attribution
-- **Context-Aware**: Answers strictly based on indexed documents
+- **Multiple LLM Providers**: Ollama (local), OpenAI (cloud), Mock (testing)
+- **Grounding Validation**: Evidence verification with time/numeric anchor detection
+- **Context-Aware Generation**: Answers strictly based on indexed documents only
+- **Debug Capabilities**: Detailed retrieval and processing information for troubleshooting
+
+### Quality Assurance
+- **Comprehensive Testing**: 50+ test cases covering all major functionality
+- **Mock Provider**: Deterministic responses for CI/CD pipelines
+- **Integration Testing**: End-to-end validation of upload → query → response pipeline
+- **Performance Validation**: Context length and retrieval quality assertions
 
 ## 🚀 Quick Start
 
@@ -127,10 +149,39 @@ Open http://localhost:8000 in your browser.
 
 ### Protected Endpoints (Require JWT)
 - `GET /api/config` - Get tenant-specific configuration
-- `POST /api/upload` - Upload and index documents
-- `POST /api/query` - Query documents with streaming response
-- `GET /api/documents` - List all documents for current tenant
-- `POST /api/reset` - Reset tenant's vector store
+- `POST /api/upload` - Upload and index documents (supports PDF, DOCX, TXT)
+- `POST /api/query` - Advanced document querying with intelligent retrieval
+  - **Broad Question Handling**: Automatic context expansion for comprehensive questions
+  - **Evidence Citations**: Responses include chunk IDs for source verification
+  - **Streaming Response**: Real-time answer generation
+  - **Debug Mode**: Optional detailed processing information
+- `GET /api/documents` - List all documents for current tenant with status tracking
+- `POST /api/reset` - Reset tenant's vector store and document index
+
+### Response Formats
+
+#### Query Response
+```json
+{
+  "answer": "Streaming text response with evidence-based information...",
+  "sources": ["document1.pdf", "document2.docx"],
+  "evidence": [
+    {
+      "snippet": "Relevant text excerpt...",
+      "chunk_id": "doc1_chunk_5",
+      "heading": "First Day Checklist",
+      "doc_id": "doc1",
+      "anchor_type": "TIME"
+    }
+  ],
+  "debug": {
+    "retrieved": 25,
+    "selected": 8,
+    "context_length": 2100,
+    "pipeline_marker": "EXTRACTOR_RECEPTION_LOCATION"
+  }
+}
+```
 
 ### Other
 - `GET /health` - Health check endpoint
@@ -148,26 +199,88 @@ ragify-mvp-ollama/
 │   ├── models.py              # SQLAlchemy models
 │   ├── tenant_config.py       # Tenant configurations
 │   └── services/
-│       ├── ingestion.py       # Document processing
-│       └── rag_service.py     # Multi-tenant RAG engine
+│       ├── ingestion.py       # Document processing & chunking
+│       └── rag_service.py     # Advanced multi-tenant RAG engine
+│           ├── ChunkHit dataclass    # Document chunk representation
+│           ├── MMR selection         # Diverse retrieval algorithm
+│           ├── Broad question detection
+│           ├── Evidence extraction   # Citation and grounding
+│           ├── Deterministic extractors
+│           └── Hybrid scoring        # Lexical + semantic ranking
 ├── static/
 │   ├── login.html             # Authentication page
 │   └── index.html             # Main application UI
-├── main.py                    # FastAPI application
+├── main.py                    # FastAPI application with streaming
 ├── requirements.txt           # Python dependencies
-├── TESTING_GUIDE.md           # Comprehensive testing instructions
-├── SETUP_WITHOUT_DOCKER.md    # Alternative setup options
-└── PHASE1_SUMMARY.md          # Implementation documentation
+├── pytest.ini                 # Test configuration
+├── test_*.py                  # 50+ comprehensive test files
+├── *.md                       # Documentation files
+└── CI_TESTING.md              # CI/CD testing guide
 ```
+
+### Key Components
+
+#### RAG Service (`rag_service.py`)
+- **Question Classification**: Broad vs. specific question detection
+- **Retrieval Pipeline**: Hybrid scoring with lexical overlap + embeddings
+- **Selection Algorithms**: MMR for diversity, adjacent chunk expansion
+- **Evidence Processing**: Citation tracking, anchor type detection
+- **Response Generation**: Context-aware LLM prompting with strict evidence requirements
+
+#### Document Ingestion (`ingestion.py`)
+- **Format Support**: PDF, DOCX, TXT processing
+- **Chunking Strategy**: Character-based with configurable overlap
+- **Metadata Extraction**: Headers, source files, chunk indices
+- **Error Handling**: Robust processing with detailed error reporting
+
+#### Testing Suite
+- **Unit Tests**: Individual component validation
+- **Integration Tests**: End-to-end pipeline testing
+- **Mock Provider**: Deterministic testing without external dependencies
+- **CI/CD Support**: Automated testing for deployment pipelines
 
 ## 🧪 Testing
 
-See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions, including:
-- Quick start guide
-- Step-by-step testing procedures
-- Tenant isolation verification
-- API testing examples
-- Troubleshooting tips
+RAGify includes a comprehensive test suite with 50+ test cases covering all major functionality.
+
+### Test Categories
+- **Unit Tests**: Individual component validation (chunking, scoring, evidence extraction)
+- **Integration Tests**: End-to-end pipeline testing (upload → index → query → response)
+- **RAG Pipeline Tests**: Retrieval quality, context expansion, evidence validation
+- **Grounding Tests**: Evidence verification and citation accuracy
+- **Multi-tenant Tests**: Tenant isolation and access control
+- **API Tests**: Endpoint validation and error handling
+
+### Quick Test Commands
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test categories
+pytest test_rag_pipeline.py -v          # RAG pipeline validation
+pytest test_grounding_gate.py -v        # Evidence verification
+pytest test_integration.py -v           # End-to-end testing
+
+# Run with coverage
+pytest --cov=app --cov-report=html
+
+# Run mock tests (no external dependencies)
+LLM_PROVIDER=mock pytest test_integration.py -v
+```
+
+### Test Coverage Areas
+- ✅ Document upload and processing (PDF, DOCX, TXT)
+- ✅ Vector indexing and retrieval
+- ✅ Broad vs. specific question handling
+- ✅ Adjacent chunk expansion for comprehensive answers
+- ✅ Evidence citation and grounding validation
+- ✅ Streaming response functionality
+- ✅ Multi-tenant isolation
+- ✅ Authentication and authorization
+- ✅ Error handling and edge cases
+
+See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions.
 
 ## 🔧 Configuration
 
@@ -249,6 +362,43 @@ USERS_DB = {
 }
 ```
 
+## 🎯 Advanced Capabilities
+
+### Intelligent Question Handling
+
+RAGify automatically adapts its retrieval strategy based on question type:
+
+**Broad Questions** (e.g., "What do I do on my first day?")
+- Expands context with adjacent chunks (±2 indices)
+- Includes "First Day" and "Checklist" sections automatically
+- Ensures minimum 1500+ characters of context
+- Provides numbered checklists with evidence citations
+
+**Specific Questions** (e.g., "What is the wifi password?")
+- Uses focused retrieval (6 chunks)
+- Leverages deterministic extractors for common queries
+- Provides direct, evidence-based answers
+
+**Deterministic Extractors** for common HR/IT questions:
+- **Badge Pickup**: "Where do I pick up my badge?" → "BADGE_PICKUP: Available at reception/security desk"
+- **Manager Name**: "Who is my manager?" → "MANAGER_NAME: [Extracted Name]"
+- **Reception Location**: "Where is reception?" → "RECEPTION_LOCATION: Main lobby/front desk"
+
+### Evidence & Grounding
+
+- **Citation Tracking**: Every response includes `(CHUNK_ID=<id>)` references
+- **Anchor Detection**: Identifies time slots, numeric values, and key terms
+- **Grounding Validation**: Ensures answers are based only on indexed documents
+- **Source Attribution**: Lists all contributing documents with snippets
+
+### Use Cases
+
+**HR Onboarding**: Comprehensive first-day checklists with time-specific instructions
+**IT Support**: Wifi passwords, software installation guides, troubleshooting steps
+**Policy Documentation**: Company policies with specific rule extraction
+**Training Materials**: Step-by-step procedures with prerequisite identification
+**FAQ Systems**: Natural language answers with source document references
+
 ## 📊 Database Schema
 
 ### Document Model
@@ -325,9 +475,16 @@ init_db()  # Creates all tables
 ## 📚 Additional Documentation
 
 - [PHASE1_SUMMARY.md](PHASE1_SUMMARY.md) - Complete Phase 1 implementation details
-- [TESTING_GUIDE.md](TESTING_GUIDE.md) - Comprehensive testing manual
+- [TESTING_GUIDE.md](TESTING_GUIDE.md) - Comprehensive testing manual with 50+ test cases
 - [SETUP_WITHOUT_DOCKER.md](SETUP_WITHOUT_DOCKER.md) - Alternative setup options
+- [CI_TESTING.md](CI_TESTING.md) - CI/CD testing guide with mock provider
+- [GROUNDING_GATE_SUMMARY.md](GROUNDING_GATE_SUMMARY.md) - Evidence validation system
+- [SSE_IMPLEMENTATION.md](SSE_IMPLEMENTATION.md) - Streaming response implementation
+- [ASYNC_INGESTION.md](ASYNC_INGESTION.md) - Document processing pipeline
+- [EMBEDDER_IMPLEMENTATION.md](EMBEDDER_IMPLEMENTATION.md) - Embedding and retrieval system
 - [BRANCH_STATUS.md](BRANCH_STATUS.md) - Current development status
+- [CONVERSATION_SUPPORT.md](CONVERSATION_SUPPORT.md) - Multi-turn conversation features
+- [GUARDRAILS.md](GUARDRAILS.md) - Safety and quality controls
 
 ## 🤝 Contributing
 
@@ -342,14 +499,32 @@ This project is part of the RAGify MVP and is intended for demonstration and edu
 
 ## 🔗 Tech Stack
 
-- **Backend**: FastAPI 0.100+
-- **Database**: PostgreSQL 15+ with SQLAlchemy
-- **Vector DB**: ChromaDB <0.4.0
-- **AI Models**: Ollama (nomic-embed-text, llama3)
-- **Auth**: JWT with bcrypt
-- **Frontend**: Vanilla JavaScript (no framework)
-- **Document Processing**: PyPDF, python-docx
+- **Backend**: FastAPI 0.100+ with async streaming support
+- **Database**: PostgreSQL 15+ with SQLAlchemy ORM
+- **Vector DB**: ChromaDB <0.4.0 with tenant-scoped collections
+- **AI Models**: Ollama (nomic-embed-text, llama3) + OpenAI API support
+- **Auth**: JWT with bcrypt password hashing
+- **Frontend**: Vanilla JavaScript with streaming response handling
+- **Document Processing**: PyPDF2, python-docx, character-based chunking
+- **Testing**: pytest with 50+ comprehensive test cases
+- **Deployment**: Docker support with multi-provider LLM flexibility
 
----
+### RAG Pipeline Features
 
-**Built with ❤️ for intelligent document processing**
+#### Retrieval
+- **Hybrid Scoring**: Lexical overlap + semantic similarity ranking
+- **MMR Selection**: Maximal Marginal Relevance for diverse context
+- **Adjacent Expansion**: Automatic chunk inclusion for key sections
+- **Fallback Rewriting**: Query enhancement for better document matching
+
+#### Generation
+- **Evidence-Based**: Strict citation requirements with chunk ID tracking
+- **Context-Aware**: Minimum length thresholds (1500+ chars for broad questions)
+- **Streaming Output**: Real-time response generation
+- **Grounding Validation**: Evidence verification with anchor type detection
+
+#### Intelligence
+- **Question Classification**: Broad vs. specific question detection
+- **Deterministic Extractors**: Specialized handling for common queries
+- **Anchor Detection**: Time and numeric pattern recognition
+- **Coverage Gates**: Quality assurance for response completeness
