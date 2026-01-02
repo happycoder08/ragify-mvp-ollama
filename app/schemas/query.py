@@ -4,8 +4,19 @@ Canonical schemas for query API request/response.
 Enforces strict typing and validation for /api/query endpoint.
 """
 
+from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, Field, validator, root_validator
+
+
+class AnswerSchema(Enum):
+    """Answer schema classification for query responses."""
+    FACT_SINGLE = "FACT_SINGLE"
+    CHECKLIST_PROCEDURE = "CHECKLIST_PROCEDURE"
+    POLICY_EXCERPT = "POLICY_EXCERPT"
+    BOOLEAN_SPECIFIED = "BOOLEAN_SPECIFIED"
+    LOCATION_OR_CONTACT = "LOCATION_OR_CONTACT"
+    NOT_FOUND_EXPLICIT = "NOT_FOUND_EXPLICIT"
 
 
 class QueryRequest(BaseModel):
@@ -25,6 +36,8 @@ class EvidenceItem(BaseModel):
     chunk_id: str = Field(..., description="Unique chunk identifier")
     heading: Optional[str] = Field(default=None, description="Section heading or document title")
     doc_id: Optional[int] = Field(default=None, description="Database document ID")
+    anchor_type: Optional[str] = Field(default=None, description="Type of anchor content: WIFI, TIME, or None")
+    anchor_detected: bool = Field(default=False, description="Whether anchor content was detected in this evidence")
     
     class Config:
         json_schema_extra = {
@@ -32,7 +45,9 @@ class EvidenceItem(BaseModel):
                 "snippet": "Employees receive 15 days of vacation per year",
                 "chunk_id": "1_onboarding.txt_3",
                 "heading": "Vacation Policy",
-                "doc_id": 1
+                "doc_id": 1,
+                "anchor_type": None,
+                "anchor_detected": False
             }
         }
 
@@ -75,6 +90,14 @@ class DebugInfo(BaseModel):
     failed_check: Optional[str] = Field(default=None, description="Which grounding check failed")
     support_score: Optional[float] = Field(default=None, description="Grounding support score (e.g., sum_top3)")
     gate_evidence_lines_count: Optional[int] = Field(default=None, description="Count of evidence lines considered by gate")
+    debug_trace: Optional[dict] = Field(default=None, description="Detailed debug trace for high debug levels")
+    retrieved_top: Optional[List[dict]] = Field(default=None, description="Top 10 retrieved chunks with chunk_id, heading, distance")
+    selected_chunk_ids: Optional[List[str]] = Field(default=None, description="List of chunk_ids used to build context")
+    selected_headings: Optional[List[str]] = Field(default=None, description="List of headings used")
+    context_chunks_count: Optional[int] = Field(default=None, description="Number of chunks concatenated")
+    context_text_chars: Optional[int] = Field(default=None, description="Length of final context text")
+    invariant_violation: Optional[bool] = Field(default=None, description="Set if refused=false but answer contains canonical refusal phrase")
+    answer_schema: Optional[AnswerSchema] = Field(default=None, description="Answer schema classification")
 
 
 class QueryFinalResponse(BaseModel):

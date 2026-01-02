@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, List, Tuple, AsyncGenerator, Optional
 
 from dataclasses import dataclass, field
+from app.schemas.query import AnswerSchema
 
 @dataclass
 class ChunkHit:
@@ -1413,6 +1414,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "refused": False,
             "pipeline_marker": "EXTRACTOR_BADGE_PICKUP",
             "request_id": request_id,
+            "answer_schema": None,  # Will be set by pipeline logic
         }
         
         return badge_pickup_gen(), source_files, evidence_items, context_text, debug_info
@@ -1438,6 +1440,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
                 "refused": False,
                 "pipeline_marker": "EXTRACTOR_MANAGER_NAME",
                 "request_id": request_id,
+                "answer_schema": None,  # Will be set by pipeline logic
             }
             
             return manager_name_gen(), source_files, evidence_items, context_text, debug_info
@@ -1465,6 +1468,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "refused": False,
             "pipeline_marker": "EXTRACTOR_RECEPTION_LOCATION",
             "request_id": request_id,
+            "answer_schema": None,  # Will be set by pipeline logic
         }
         
         return reception_location_gen(), source_files, evidence_items, context_text, debug_info
@@ -1638,6 +1642,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "retrieved_chunks_top20": retrieved_chunks_top20 if retrieved_chunks_top20 is not None else [],
             "selected_chunks": selected_chunks_debug,
             "request_id": request_id,
+            "answer_schema": None,  # Will be set by pipeline logic
         }
     else:
         context_length = len(context_text) if context_text else 0
@@ -1666,6 +1671,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
             "context_length": context_length,
             "evidence_count": evidence_count,
             "request_id": request_id,
+            "answer_schema": None,  # Will be set by pipeline logic
         }
 
 
