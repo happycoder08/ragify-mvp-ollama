@@ -1268,16 +1268,24 @@ async def query_collection(
     def _llm_prompt_template(*, instruction, history, context, question):
         # Compose the prompt using instruction and history as strings
         if is_broad:
-            instruction_str = instruction or """You are a helpful assistant. Answer the user's broad question using ONLY the EVIDENCE below.
+            instruction_str = instruction or """You are a retrieval-grounded assistant.
 
-Output a numbered checklist. Each checklist item must:
-- Be directly supported by the evidence
-- End with (CHUNK_ID=<id>) where <id> is the chunk identifier from the evidence
-- Never include generic or assumed steps not present in evidence
+RULES (must follow):
+- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
+- Produce a numbered checklist of concrete first-day actions.
+- Every checklist item MUST be directly supported by one evidence chunk and MUST end with a citation in this exact format: (CHUNK_ID=<id>).
+- Do NOT invent generic steps (e.g., "review policies", "attend training") unless those words appear in the evidence.
+- If a specific requested detail is not in the evidence, write "Not specified in the document" for that specific item only.
+- NEVER output the sentence: "The document does not specify this." unless the entire answer is impossible from the evidence.
 
-If information is missing for a specific item, state "Not specified in the document" ONLY for that item. Do not add the canonical refusal sentence unless the entire query cannot be answered."""
-        else:
-            instruction_str = instruction or "You are a helpful assistant. Answer the user's question ONLY using the EVIDENCE below. If the EVIDENCE does not contain the answer, reply: 'The document does not specify this.'"
+OUTPUT FORMAT:
+1. <action> (CHUNK_ID=<id>)
+2. <action> (CHUNK_ID=<id>)
+...
+
+EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, names, and phrases from the evidence."""
+
+            instruction_str = instruction or "Answer the user's question ONLY using the EVIDENCE below. If the EVIDENCE does not contain the answer, reply exactly: 'The document does not specify this.'"
         history_str = ""
         if history:
             if isinstance(history, list):
@@ -1469,7 +1477,8 @@ If information is missing for a specific item, state "Not specified in the docum
 
     # Expand selected for broad mode: include adjacent chunks for "First Day" or "Checklist" headings
     if is_broad:
-        expanded_selected = set(selected)
+        expanded_selected_ids = set(h.chunk_id for h in selected)
+        expanded_selected = list(selected)
         for h in selected:
             heading = h.meta.get("header") or _extract_header_first_line(question, h.doc)
             if heading and ("first day" in heading.lower() or "checklist" in heading.lower()):
@@ -1479,9 +1488,10 @@ If information is missing for a specific item, state "Not specified in the docum
                 for other in hits:
                     if other.meta.get("source_file") == source:
                         other_idx = other.meta.get("chunk", 0)
-                        if abs(other_idx - chunk_idx) <= 2 and other not in expanded_selected:
-                            expanded_selected.add(other)
-        selected = list(expanded_selected)
+                        if abs(other_idx - chunk_idx) <= 2 and other.chunk_id not in expanded_selected_ids:
+                            expanded_selected_ids.add(other.chunk_id)
+                            expanded_selected.append(other)
+        selected = expanded_selected
         selected.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
 
     # Rebuild evidence from final selected chunks
