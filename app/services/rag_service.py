@@ -1295,27 +1295,76 @@ async def query_collection(
 
     # 6) call model strictly with context_text (PRIMARY EVIDENCE only)
     # Update prompt: answer ONLY from PRIMARY EVIDENCE, else refuse
-    def _llm_prompt_template(*, instruction, history, context, question):
+    def _llm_prompt_template(*, instruction, history, context, question, answer_schema):
         # Compose the prompt using instruction and history as strings
-        if is_broad:
-            instruction_str = instruction or """You are a retrieval-grounded assistant.
+        if answer_schema == AnswerSchema.CHECKLIST_PROCEDURE:
+            instruction_str = """You are a retrieval-grounded assistant.
 
 RULES (must follow):
 - Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
-- Produce a numbered checklist of concrete first-day actions.
+- Produce a numbered checklist of concrete actions.
 - Every checklist item MUST be directly supported by one evidence chunk and MUST end with a citation in this exact format: (CHUNK_ID=<id>).
-- Do NOT invent generic steps (e.g., "review policies", "attend training") unless those words appear in the evidence.
-- If a specific requested detail is not in the evidence, write "Not specified in the document" for that specific item only.
-- NEVER output the sentence: "The document does not specify this." unless the entire answer is impossible from the evidence.
+- Do NOT invent generic steps unless those words appear in the evidence.
+- Partial checklists allowed if evidence is incomplete.
 
 OUTPUT FORMAT:
 1. <action> (CHUNK_ID=<id>)
 2. <action> (CHUNK_ID=<id>)
 ...
 
-EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, names, and phrases from the evidence."""
+EVIDENCE is a set of chunks with CHUNK_ID and text."""
+        elif answer_schema == AnswerSchema.POLICY_EXCERPT:
+            instruction_str = """You are a retrieval-grounded assistant.
 
-            instruction_str = instruction or "Answer the user's question ONLY using the EVIDENCE below. If the EVIDENCE does not contain the answer, reply exactly: 'The document does not specify this.'"
+RULES (must follow):
+- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
+- Produce a bullet list of policy statements.
+- Use exact or lightly paraphrased wording from the evidence.
+- Each bullet MUST cite CHUNK_ID in this exact format: (CHUNK_ID=<id>).
+- No advice, interpretation, or additional commentary.
+
+OUTPUT FORMAT:
+- <policy statement> (CHUNK_ID=<id>)
+- <policy statement> (CHUNK_ID=<id>)
+...
+
+EVIDENCE is a set of chunks with CHUNK_ID and text."""
+        elif answer_schema == AnswerSchema.FACT_SINGLE:
+            instruction_str = """You are a retrieval-grounded assistant.
+
+RULES (must follow):
+- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
+- Answer in exactly one sentence.
+- Must cite exactly one CHUNK_ID in this exact format: (CHUNK_ID=<id>).
+- No lists or multiple sentences.
+
+OUTPUT FORMAT:
+<single sentence answer> (CHUNK_ID=<id>)
+
+EVIDENCE is a set of chunks with CHUNK_ID and text."""
+        elif answer_schema == AnswerSchema.BOOLEAN_SPECIFIED:
+            instruction_str = """You are a retrieval-grounded assistant.
+
+RULES (must follow):
+- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
+- Output either:
+  "Yes — <short explanation>. (CHUNK_ID=<id>)"
+  OR
+  "No — the document does not specify this."
+
+EVIDENCE is a set of chunks with CHUNK_ID and text."""
+        elif answer_schema == AnswerSchema.NOT_FOUND_EXPLICIT:
+            instruction_str = """You are a retrieval-grounded assistant.
+
+RULES (must follow):
+- Output exactly: "The document does not specify this."
+- Do NOT use the evidence for any other purpose.
+
+EVIDENCE is a set of chunks with CHUNK_ID and text."""
+        else:
+            # Fallback for any unhandled schemas
+            instruction_str = "Answer the user's question ONLY using the EVIDENCE below. If the EVIDENCE does not contain the answer, reply exactly: 'The document does not specify this.'"
+        
         history_str = ""
         if history:
             if isinstance(history, list):
@@ -1614,7 +1663,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text. Prefer using exact times, na
         mode=mode,
         conversation_history=conversation_history,
         request_id=request_id,
-        prompt_template=_llm_prompt_template,
+        prompt_template=lambda **kwargs: _llm_prompt_template(**kwargs, answer_schema=answer_schema),
     )
 
     debug_info = None
