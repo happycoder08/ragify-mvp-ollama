@@ -227,7 +227,7 @@ def test_wifi_golden_case():
     import asyncio
     from unittest.mock import AsyncMock, patch
     from app.services.rag_service import query_collection
-    
+
     # Mock the collection and embedding calls
     async def mock_get_collection_async(tenant_id):
         # Mock collection with WiFi chunk
@@ -237,9 +237,13 @@ def test_wifi_golden_case():
                     "documents": [["SECTION: WiFi\nFor guests: use SSID RAGIFY-GUEST and password RAGIFY-1234.\nUnique anchor: UNIQUE_TOKEN_PDF_2_1A7B4F"]],
                     "metadatas": [[{
                         "source_file": "employee_handbook_excerpt.pdf",
+                        "filename": "employee_handbook_excerpt.pdf",
                         "chunk": 0,
                         "doc_id": 1,
-                        "filename": "employee_handbook_excerpt.pdf"
+                        "chunk_id": "chunk_1",
+                        "header": "SECTION: WiFi",
+                        "header_first_line": "SECTION: WiFi",
+                        "anchor_type": "WIFI"
                     }]],
                     "distances": [[0.1]],
                     "ids": [["chunk_1"]]

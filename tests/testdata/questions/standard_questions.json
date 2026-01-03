@@ -1,0 +1,82 @@
+[
+  {
+    "id": "arrival_time",
+    "question": "What time should I arrive on my first day?",
+    "expected_anchor": "8:00 AM",
+    "expected_file": "onboarding_guide.txt",
+    "intent": "time_arrival",
+    "expect_refused": false
+  },
+  {
+    "id": "orientation_start",
+    "question": "When does orientation start?",
+    "expected_anchor": "9:00 AM",
+    "expected_file": "onboarding_guide.txt",
+    "intent": "time",
+    "expect_refused": false
+  },
+  {
+    "id": "team_lunch",
+    "question": "When is team lunch?",
+    "expected_anchor": "12:00 PM",
+    "expected_file": "onboarding_guide.txt",
+    "intent": "time",
+    "expect_refused": false
+  },
+  {
+    "id": "wifi_password",
+    "question": "What is the WiFi password?",
+    "expected_anchor": "WIFI_PASSWORD: RAGIFY-1234",
+    "expected_file": "it_policy.txt",
+    "intent": "it_access",
+    "expect_refused": false
+  },
+  {
+    "id": "vpn_profile",
+    "question": "What VPN profile should I use?",
+    "expected_anchor": "RAGIFY-VPN",
+    "expected_file": "it_policy.txt",
+    "intent": "it_access",
+    "expect_refused": false
+  },
+  {
+    "id": "parking_code",
+    "question": "What is the parking gate code?",
+    "expected_anchor": "PARK-4421",
+    "expected_file": "facilities_parking.md",
+    "intent": "location",
+    "expect_refused": false
+  },
+  {
+    "id": "daily_standup",
+    "question": "When does daily standup start?",
+    "expected_anchor": "10:30 AM",
+    "expected_file": "employee_handbook_excerpt.pdf",
+    "intent": "time",
+    "expect_refused": false
+  },
+  {
+    "id": "pto_days",
+    "question": "How many PTO days do new hires receive?",
+    "expected_anchor": "10 days",
+    "expected_file": "benefits_overview.txt",
+    "intent": "benefits",
+    "expect_refused": false
+  },
+  {
+    "id": "edge_token",
+    "question": "What is the unique token in the edge cases document?",
+    "expected_anchor": "UNIQUE_TOKEN_EDGE_0B77CC",
+    "expected_file": "edge_cases_chunking.txt",
+    "intent": "edge",
+    "expect_refused": false
+  },
+  {
+    "id": "refusal_ceo",
+    "question": "What is the CEO's favorite color?",
+    "expected_anchor": null,
+    "expected_file": null,
+    "intent": "refusal",
+    "expect_refused": true
+  }
+]

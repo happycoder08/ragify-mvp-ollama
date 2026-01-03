@@ -25,6 +25,18 @@ async def init_http_client():
         import sys
         print(f"[WARN] Could not initialize/close HTTP client: {e}", file=sys.stderr)
 
+@pytest.fixture(autouse=True, scope="session")
+async def init_chroma_client():
+    try:
+        from app.services import clients
+        if hasattr(clients, "initialize_chroma_client"):
+            clients.initialize_chroma_client()
+        # No teardown needed for ChromaDB
+        yield
+    except Exception as e:
+        import sys
+        print(f"[WARN] Could not initialize ChromaDB client: {e}", file=sys.stderr)
+
 # Golden set: question, expected header keyword, expected evidence anchor, expect_refused
 GOLDEN_SET = [
     {

@@ -35,6 +35,20 @@ from app.services.ingestion import load_file_to_text, chunk_text
 
 
 @pytest.fixture(scope="session")
+def standard_questions():
+    """Load standard test questions from JSON file."""
+    questions_file = Path(REPO_ROOT) / "tests" / "testdata" / "questions" / "standard_questions.json"
+    with open(questions_file, 'r') as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="session")
+def integration_setup():
+    """Fixture for integration tests - sets up real Ollama embeddings."""
+    os.environ["INTEGRATION_TESTS"] = "1"
+
+
+@pytest.fixture(scope="session")
 def event_loop():
     import asyncio
     loop = asyncio.new_event_loop()
@@ -42,18 +56,38 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(scope="session")
+def integration_setup():
+    """Fixture for integration tests - sets up real Ollama embeddings."""
+    os.environ["INTEGRATION_TESTS"] = "1"
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def seed_vectorstore():
+    # Determine test mode: ci_fast (default) or integration
+    is_integration = os.getenv("INTEGRATION_TESTS", "0") == "1"
+    
+    if is_integration:
+        # Integration tests: use real Ollama embeddings
+        os.environ["EMBEDDING_PROVIDER"] = ""  # Use default (RealEmbedder)
+        os.environ["LLM_PROVIDER"] = "ollama"
+        os.environ["APP_MODE"] = "demo"  # Not CI mode for integration
+    else:
+        # CI fast tests: use TF-IDF embeddings and mock LLM
+        os.environ["EMBEDDING_PROVIDER"] = "tfidf_test"
+        os.environ["LLM_PROVIDER"] = "mock"
+        os.environ["APP_MODE"] = "ci"
+    
     # Reset cached providers so env vars apply cleanly
     if hasattr(rag_service, "reset_embedding_provider_for_tests"):
         rag_service.reset_embedding_provider_for_tests()
     if hasattr(rag_service, "reset_llm_provider_for_tests"):
         rag_service.reset_llm_provider_for_tests()
 
-    # Ensure CI/mock mode + allow chroma indexing during seeding
-    os.environ["APP_MODE"] = "ci"
-    os.environ["CI"] = "true"
-    os.environ["ALLOW_CHROMA_INDEXING_IN_MOCK"] = "true"
+    # Ensure CI/mock mode + allow chroma indexing during seeding (for ci_fast)
+    if not is_integration:
+        os.environ["CI"] = "true"
+        os.environ["ALLOW_CHROMA_INDEXING_IN_MOCK"] = "true"
 
     # Clean slate
     if os.path.exists(VECTOR_DIR_TEST):
@@ -75,9 +109,10 @@ async def seed_vectorstore():
     allowed_ext = {".txt", ".md", ".pdf", ".docx"}
     paths = sorted([p for p in docs_dir.iterdir() if p.suffix.lower() in allowed_ext])
 
-    total_chunks_indexed = 0
-    per_file_counts = {}
-
+    # Collect all chunks across all documents first
+    all_chunks = []
+    per_file_chunks = {}
+    
     for path in paths:
         filename = path.name
 
@@ -93,7 +128,20 @@ async def seed_vectorstore():
         # Chunk using production chunker
         chunks = chunk_text(text)
         assert chunks, f"[{filename}] produced 0 chunks"
+        
+        # Store chunks for this file and add to global collection
+        per_file_chunks[filename] = chunks
+        all_chunks.extend(chunks)
 
+    # Fit TF-IDF embedder on entire corpus (once per session)
+    if hasattr(rag_service, "fit_tfidf_test_embedder"):
+        rag_service.fit_tfidf_test_embedder(all_chunks)
+
+    # Now add documents to vectorstore
+    total_chunks_indexed = 0
+    per_file_counts = {}
+
+    for filename, chunks in per_file_chunks.items():
         # Seed via production add_documents
         n = await rag_service.add_documents("default", chunks, filename)
         per_file_counts[filename] = n

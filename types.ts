@@ -58,6 +58,12 @@ export interface DebugInfo {
   grounding_gate?: Record<string, any> | null;
   selected_chunks?: any[] | null;
   context?: string | null;
+  retrieved_top?: Array<{chunk_id: string, heading: string, distance: number}> | null;
+  selected_chunk_ids?: string[] | null;
+  selected_headings?: string[] | null;
+  context_chunks_count?: number | null;
+  context_text_chars?: number | null;
+  invariant_violation?: boolean | null;
 }
 
 export interface QueryFinalResponse {

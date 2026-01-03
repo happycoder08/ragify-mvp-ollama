@@ -13,3 +13,4 @@ PyJWT
 bcrypt
 
 pytest-asyncio
+scikit-learn

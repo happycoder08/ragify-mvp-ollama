@@ -4,6 +4,7 @@ Embedding interfaces and implementations for RAGify.
 Provides a clean abstraction for text embedding with multiple backends:
 - RealEmbedder: Uses HTTP client to call Ollama/OpenAI embedding APIs
 - MockEmbedder: Deterministic hash-based vectors for testing (no network required)
+- TfidfTestEmbedder: TF-IDF based vectors that preserve lexical similarity (for testing)
 """
 
 import hashlib
@@ -142,6 +143,95 @@ class MockEmbedder:
             vector = [x / norm for x in vector]
         
         return vector
+
+
+class TfidfTestEmbedder:
+    """
+    Deterministic TF-IDF based embedder for testing that preserves lexical similarity.
+
+    Uses sklearn TfidfVectorizer with fixed parameters to create embeddings that
+    maintain lexical relationships between texts. Better than MockEmbedder for
+    testing retrieval logic while remaining deterministic and not requiring network.
+
+    Key properties:
+    - Deterministic: Same corpus always produces same embeddings
+    - Lexical similarity: Texts with similar words get similar vectors
+    - No HTTP client required (no network calls)
+    - Fixed dimension: Based on max_features parameter
+    """
+
+    def __init__(self):
+        """
+        Initialize TF-IDF test embedder.
+
+        The vectorizer will be fitted when fit_corpus() is called.
+        """
+        self.vectorizer = None
+        self.is_fitted = False
+        logger.info("TfidfTestEmbedder initialized (unfitted)")
+
+    def fit_corpus(self, texts: List[str]):
+        """
+        Fit the TF-IDF vectorizer on a corpus of texts.
+
+        This should be called once with all documents before any embedding queries.
+
+        Args:
+            texts: List of all text documents in the corpus
+        """
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+        except ImportError:
+            raise ImportError("sklearn is required for TfidfTestEmbedder. Install with: pip install scikit-learn")
+
+        # Fixed parameters for deterministic, lexical-similarity preserving embeddings
+        self.vectorizer = TfidfVectorizer(
+            lowercase=True,
+            ngram_range=(1, 2),  # unigrams and bigrams
+            max_features=4096,   # Fixed dimension
+            stop_words='english',  # Remove common stop words
+            use_idf=True,
+            smooth_idf=True,
+            sublinear_tf=True,   # Apply sublinear scaling
+        )
+
+        # Fit on the corpus
+        self.vectorizer.fit(texts)
+        self.is_fitted = True
+
+        logger.info("TfidfTestEmbedder fitted on %d documents, vocabulary size: %d",
+                   len(texts), len(self.vectorizer.vocabulary_))
+
+    async def embed_texts(self, texts: List[str], tenant_id: str) -> List[List[float]]:
+        """
+        Transform texts into TF-IDF embeddings using the fitted vectorizer.
+
+        Args:
+            texts: List of text strings to embed
+            tenant_id: Tenant identifier (for logging)
+
+        Returns:
+            List of embedding vectors (one per input text)
+
+        Raises:
+            RuntimeError: If fit_corpus() was not called first
+        """
+        if not self.is_fitted or self.vectorizer is None:
+            raise RuntimeError("TfidfTestEmbedder must be fitted with fit_corpus() before use")
+
+        logger.debug("TfidfTestEmbedder generating %d embeddings for tenant=%s", len(texts), tenant_id)
+
+        # Transform texts to TF-IDF vectors
+        tfidf_matrix = self.vectorizer.transform(texts)
+
+        # Convert sparse matrix to dense list of lists
+        embeddings = []
+        for i in range(tfidf_matrix.shape[0]):
+            # Get the row as a dense array and convert to list
+            vector = tfidf_matrix[i].toarray().flatten().tolist()
+            embeddings.append(vector)
+
+        return embeddings
 
 
 class RealEmbedder:

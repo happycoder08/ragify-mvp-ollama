@@ -127,6 +127,8 @@ from app.config import (
     TOP_K_FULL,
     ENABLE_TIMING_LOGS,
     MAX_CONVERSATION_TURNS,
+    VECTOR_DIR,
+    LLM_PROVIDER,
     get_config_summary,
 )
 from app.startup_checks import demo_startup_check
@@ -951,6 +953,31 @@ async def query(
     if isinstance(debug_payload, dict):
         logger.info(f"DEBUG_KEYS request_id={debug_payload.get('request_id')} keys={list(debug_payload.keys())}")
     
+    # Debug logging for query pipeline
+    retrieved_count = debug_payload.get("retrieved_count") if isinstance(debug_payload, dict) else None
+    selected_count = debug_payload.get("selected_count") if isinstance(debug_payload, dict) else (len(debug_payload) if isinstance(debug_payload, list) else None)
+    refused = debug_payload.get("refused") if isinstance(debug_payload, dict) else None
+    refusal_reason = debug_payload.get("refusal_reason") if isinstance(debug_payload, dict) else None
+    selected_chunks = (
+        debug_payload.get("selected_chunks")
+        if isinstance(debug_payload, dict) and debug_payload.get("selected_chunks") is not None
+        else debug_payload.get("selected")
+        if isinstance(debug_payload, dict) and debug_payload.get("selected") is not None
+        else debug_payload.get("chunks", [])
+    ) if isinstance(debug_payload, dict) else debug_payload
+    if selected_chunks and len(selected_chunks) > 0:
+        first_chunk = selected_chunks[0]
+        selected_source = first_chunk.get('source_file', 'unknown')
+        selected_chunk_id = first_chunk.get('chunk_id', 'unknown')
+        selected_header = first_chunk.get('header_first_line', '')
+    else:
+        selected_source = selected_chunk_id = selected_header = 'none'
+    evidence_count = len(evidence)
+    first_evidence_chunk_id = evidence[0].chunk_id if evidence else 'none'
+    context_preview = context_text[:200] if context_text else ''
+    logger.info(f"QUERY_DEBUG request_id={request_id} retrieved_count={retrieved_count} selected_count={selected_count} refused={refused} refusal_reason={refusal_reason} selected_source={selected_source} selected_chunk_id={selected_chunk_id} selected_header={selected_header[:80]} evidence_count={evidence_count} first_evidence_chunk_id={first_evidence_chunk_id} context_len={len(context_text)} context_preview={context_preview}")
+    logger.info(f"ANSWER_GEN_TYPE request_id={request_id} type={type(answer_gen)}")
+    
     # Extract collection metadata for debug info
     collection_name = f"documents_{tenant_id}"
     collection_count = None
@@ -993,16 +1020,101 @@ async def query(
         support_score=debug_payload.get("support_score") if isinstance(debug_payload, dict) and payload.debug >= 1 else None,
         gate_evidence_lines_count=debug_payload.get("gate_evidence_lines_count") if isinstance(debug_payload, dict) and payload.debug >= 1 else None
     )
+    
+    # Add new debug fields when debug >= 1
+    if payload.debug >= 1:
+        # retrieved_top: top 10 retrieved chunks with {chunk_id, heading, distance}
+        retrieved_chunks_top20 = debug_payload.get("retrieved_chunks_top20", []) if isinstance(debug_payload, dict) else []
+        debug_info_dict["retrieved_top"] = [
+            {
+                "chunk_id": chunk.get("chunk_id"),
+                "heading": chunk.get("header_first_line", ""),
+                "distance": chunk.get("dist")
+            }
+            for chunk in retrieved_chunks_top20[:10]
+        ]
+        
+        # selected_chunk_ids: list of chunk_ids used to build context
+        debug_info_dict["selected_chunk_ids"] = debug_payload.get("selected_chunk_ids", []) if isinstance(debug_payload, dict) else []
+        
+        # selected_headings: list of headings used
+        debug_info_dict["selected_headings"] = debug_payload.get("selected_headings", []) if isinstance(debug_payload, dict) else []
+        
+        # context_chunks_count: number of chunks concatenated
+        debug_info_dict["context_chunks_count"] = debug_payload.get("selected_count", 0) if isinstance(debug_payload, dict) else 0
+        
+        # context_text_chars: length of final context text
+        debug_info_dict["context_text_chars"] = len(context_text)
     # Always include retrieved_chunks_top20 if debug enabled
     if payload.debug >= 1:
         if isinstance(debug_payload, dict) and "retrieved_chunks_top20" in debug_payload:
             debug_info_dict["retrieved_chunks_top20"] = debug_payload["retrieved_chunks_top20"]
         else:
             debug_info_dict["retrieved_chunks_top20"] = []
+    
+    # Build debug_trace for debug >= 2
+    if payload.debug >= 2:
+        is_ci = os.getenv("CI", "").lower() in ("true", "1", "yes") or os.getenv("APP_MODE", "").lower() == "ci"
+        first_evidence_snippet = evidence[0].snippet[:200] if evidence else ''
+        debug_trace = {
+            "request_id": request_id,
+            "tenant_id": tenant_id,
+            "mode": mode,
+            "top_k": top_k,
+            "providers": {
+                "LLM_PROVIDER": LLM_PROVIDER,
+                "EMBEDDING_PROVIDER": "ollama",
+                "APP_MODE": RAGIFY_MODE,
+                "CI": is_ci
+            },
+            "VECTOR_DIR": VECTOR_DIR,
+            "selected_chunk": {
+                "chunk_id": selected_chunk_id,
+                "header_first_line": selected_header,
+                "source_file": selected_source
+            },
+            "evidence": {
+                "count": evidence_count,
+                "first_chunk_id": first_evidence_chunk_id,
+                "first_snippet_preview": first_evidence_snippet
+            },
+            "context_text_preview": context_preview,
+            "streamed_token_preview": ""  # will be filled
+        }
+        debug_info_dict["debug_trace"] = debug_trace
+    
     debug_info = DebugInfo(**debug_info_dict)
 
     # Fix: define selected_chunks for use below
     selected_chunks = debug_info.selected_chunks
+
+    # Structured log for query details
+    log_extra = ""
+    if payload.debug >= 1 and selected_chunks and len(selected_chunks) > 0:
+        first_chunk = selected_chunks[0] if isinstance(selected_chunks, list) else selected_chunks
+        if isinstance(first_chunk, dict):
+            source_file = first_chunk.get('source_file', 'unknown')
+            header_first_line = first_chunk.get('header_first_line', '')
+            log_extra = f" selected_chunks[0].source_file={source_file} header_first_line={header_first_line}"
+    logger.info(f"QUERY_LOG tenant_id={tenant_id} mode={mode} top_k={top_k} doc_ids={payload.doc_ids} debug={payload.debug} stream={payload.stream} VECTOR_DIR={VECTOR_DIR} EMBEDDING_PROVIDER=ollama LLM_PROVIDER={LLM_PROVIDER} collection_name={collection_name} collection_count={collection_count}{log_extra}")
+
+    # Wrapper for streaming to capture token previews
+    async def wrap_generator_for_debug(gen, request_id, debug_trace=None):
+        chunk_index = 0
+        streamed_preview = ""
+        async for chunk in gen:
+            if chunk_index < 2:
+                logger.info(f"STREAM_TOKEN request_id={request_id} chunk_index={chunk_index} len={len(chunk)} preview={chunk[:80]}")
+            streamed_preview += chunk
+            if len(streamed_preview) > 200:
+                streamed_preview = streamed_preview[:200]
+            chunk_index += 1
+            yield chunk
+        if debug_trace:
+            debug_trace["streamed_token_preview"] = streamed_preview
+
+    # Wrap the generator for debug logging
+    answer_gen = wrap_generator_for_debug(answer_gen, request_id, debug_trace if payload.debug >= 2 else None)
 
     # If stream is False, return a normal JSON response
     if hasattr(payload, "stream") and payload.stream is False:
@@ -1026,8 +1138,25 @@ async def query(
         else:
             full_answer = str(answer_gen)
 
+        # Debug log for non-stream final answer
+        logger.info(f"FINAL_ANSWER request_id={request_id} answer_len={len(full_answer)} preview={full_answer[:200]}")
+        if payload.debug >= 2 and 'debug_trace' in debug_info_dict:
+            debug_info_dict['debug_trace']['streamed_token_preview'] = full_answer[:200]
+
         # If the answer is the canonical refusal message, or evidence/context is empty, set refused True
-        if full_answer.strip() == refusal_answer or is_refused:
+        contract_violation = full_answer.strip() == refusal_answer or is_refused
+        # Hard guard: If refused is false, answer MUST NOT contain refusal phrase
+        invariant_violation = False
+        if not is_refused and refusal_answer in full_answer:
+            invariant_violation = True
+            contract_violation = True
+            logger.warning("[non-stream] Hard guard violation: refused=false but answer contains refusal phrase for request_id=%s", request_id)
+        
+        # Set invariant_violation in debug_info if debug >= 1
+        if payload.debug >= 1 and invariant_violation:
+            debug_info_dict["invariant_violation"] = True
+            
+        if contract_violation:
             final_response = QueryFinalResponse(
                 answer=refusal_answer,
                 refused=True,
@@ -1091,8 +1220,12 @@ async def query(
             yield f"event: token\n"
             yield f"data: {json.dumps({'t': chunk})}\n\n"
 
+        # Debug log for streaming final answer
+        logger.info(f"FINAL_ANSWER request_id={request_id} answer_len={len(full_answer)} preview={full_answer[:200]}")
+
         # Enforce contract before emitting final
         contract_violation = False
+        invariant_violation = False
         if (
             is_refused or
             not evidence or
@@ -1100,8 +1233,18 @@ async def query(
             full_answer.strip() == refusal_answer
         ):
             contract_violation = True
+        # Hard guard: If refused is false, answer MUST NOT contain refusal phrase
+        if not is_refused and refusal_answer in full_answer:
+            invariant_violation = True
+            contract_violation = True
+            logger.warning("[stream_response] Hard guard violation: refused=false but answer contains refusal phrase for request_id=%s", request_id)
+        
+        # Set invariant_violation in debug_info if debug >= 1
+        if payload.debug >= 1 and invariant_violation:
+            debug_info_dict["invariant_violation"] = True
+            
         if contract_violation:
-            logger.warning("[stream_response] Coercing to refusal: contract violation (refused=%s, evidence=%d, context empty=%s, answer=refusal) for request_id=%s", is_refused, len(evidence), not context_text.strip(), request_id)
+            logger.warning("[stream_response] Coercing to refusal: contract violation (refused=%s, evidence=%d, context empty=%s, answer=refusal, invariant_violation=%s) for request_id=%s", is_refused, len(evidence), not context_text.strip(), invariant_violation, request_id)
             final_response = QueryFinalResponse(
                 answer=refusal_answer,
                 refused=True,
