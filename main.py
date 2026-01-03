@@ -1143,8 +1143,13 @@ async def query(
         if payload.debug >= 2 and 'debug_trace' in debug_info_dict:
             debug_info_dict['debug_trace']['streamed_token_preview'] = full_answer[:200]
 
-        # If the answer is the canonical refusal message, or evidence/context is empty, set refused True
-        contract_violation = full_answer.strip() == refusal_answer or is_refused
+        # If the answer is or contains the canonical refusal message,
+        # or evidence/context is empty, treat as refusal.
+        contract_violation = (
+            full_answer.strip() == refusal_answer
+            or is_refused
+            or (refusal_answer in full_answer)
+        )
         # Hard guard: If refused is false, answer MUST NOT contain refusal phrase
         invariant_violation = False
         if not is_refused and refusal_answer in full_answer:
@@ -1230,7 +1235,8 @@ async def query(
             is_refused or
             not evidence or
             not context_text.strip() or
-            full_answer.strip() == refusal_answer
+            full_answer.strip() == refusal_answer or
+            (refusal_answer in full_answer)
         ):
             contract_violation = True
         # Hard guard: If refused is false, answer MUST NOT contain refusal phrase

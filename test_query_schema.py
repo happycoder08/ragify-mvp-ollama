@@ -68,25 +68,32 @@ def test_query_final_response_schema_success():
     assert success.evidence[0].snippet == "All employees receive 15 days of vacation per year"
     assert success.sources[0].filename == "onboarding.txt"
     
-    # Invalid: no evidence for non-refused query
-    with pytest.raises(ValueError, match="must have at least 1 evidence"):
-        QueryFinalResponse(
-            answer="Some answer",
-            refused=False,
-            refusal_reason=None,
-            evidence=[],
-            sources=[SourceItem(doc_id=1, filename="test.txt")]
-        )
-    
-    # Invalid: no sources for non-refused query
-    with pytest.raises(ValueError, match="must have at least 1 source"):
-        QueryFinalResponse(
-            answer="Some answer",
-            refused=False,
-            refusal_reason=None,
-            evidence=[EvidenceItem(snippet="text", chunk_id="1")],
-            sources=[]
-        )
+    # Invalid combinations are coerced into standardized refusal responses
+    # Case 1: no evidence for non-refused query -> coerced to refusal
+    coerced_no_evidence = QueryFinalResponse(
+        answer="Some answer",
+        refused=False,
+        refusal_reason=None,
+        evidence=[],
+        sources=[SourceItem(doc_id=1, filename="test.txt")]
+    )
+    assert coerced_no_evidence.refused is True
+    assert coerced_no_evidence.answer == "The document does not specify this."
+    assert coerced_no_evidence.evidence == []
+    assert coerced_no_evidence.sources == []
+
+    # Case 2: no sources for non-refused query -> coerced to refusal
+    coerced_no_sources = QueryFinalResponse(
+        answer="Some answer",
+        refused=False,
+        refusal_reason=None,
+        evidence=[EvidenceItem(snippet="text", chunk_id="1")],
+        sources=[]
+    )
+    assert coerced_no_sources.refused is True
+    assert coerced_no_sources.answer == "The document does not specify this."
+    assert coerced_no_sources.evidence == []
+    assert coerced_no_sources.sources == []
 
 
 def test_query_request_schema_validation():
