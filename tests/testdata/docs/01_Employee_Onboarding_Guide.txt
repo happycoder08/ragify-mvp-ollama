@@ -1,0 +1,37 @@
+EMPLOYEE ONBOARDING GUIDE (v1)
+=============================
+
+1. ARRIVE AT THE OFFICE (8:00 AM)
+   - Report to the main reception on the 3rd floor.
+   - Bring: Government-issued ID, signed offer letter, completed I-9 form.
+   - You will receive: Employee badge, building access card, parking pass.
+
+2. ORIENTATION (8:30 AM - 9:30 AM)
+   - Meet HR in Conference Room A (3rd floor).
+   - Review company policies and benefits overview.
+   - Complete payroll and direct deposit forms.
+
+3. IT SETUP (10:00 AM - 11:30 AM)
+   - Pick up your laptop from IT (Room 3C-12).
+   - Sign in with your temporary password (provided by IT).
+   - Enroll in MFA for email and VPN (required).
+
+4. TEAM INTRODUCTIONS (11:30 AM - 12:00 PM)
+   - Meet your manager and team.
+   - Confirm your first-week schedule.
+
+5. LUNCH (12:00 PM - 1:00 PM)
+
+6. SECURITY BRIEFING (1:00 PM - 1:30 PM)
+   - Visitor escort rules.
+   - Badge policy and restricted areas.
+
+7. WORKSPACE SETUP (2:00 PM - 3:00 PM)
+   - Set up your desk/workstation.
+   - Install required software (IT will provide list).
+   - Join team Slack channels.
+   - Add yourself to team calendar.
+
+8. END OF DAY CHECKOUT (4:45 PM)
+   - Confirm you can access email and Slack.
+   - Ask IT to verify VPN access if you will work remotely.

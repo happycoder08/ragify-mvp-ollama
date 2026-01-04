@@ -1,0 +1,22 @@
+IT SETUP GUIDE (v1)
+===================
+
+MFA REQUIREMENT
+- Multi-factor authentication (MFA) is REQUIRED for email and VPN access.
+
+NEW EMPLOYEE ACCOUNT SETUP
+1) Open your email client and sign in with your temporary password.
+2) Change your password when prompted.
+3) Enroll in MFA using the authenticator app recommended by IT.
+4) Join the company Slack workspace using your company email address.
+
+VPN SETUP (REMOTE WORK)
+1) Install the VPN client from the Company Software Portal.
+2) Sign in with your company credentials.
+3) Complete MFA when prompted.
+4) Confirm you can reach internal systems.
+
+HELPDESK
+- Email: it-helpdesk@company.example
+- Phone: (555) 010-2000
+- Hours: Monday–Friday, 8:00 AM–6:00 PM

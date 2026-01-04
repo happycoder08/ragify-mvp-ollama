@@ -54,3 +54,75 @@ async def test_api_golden(asgi_client, standard_questions):
 
         # Skip semantic validation for CI tests with mock providers
         # The expected_anchor and expected_file validations are too strict for mock responses
+
+
+@pytest.mark.asyncio
+async def test_pipeline_marker_extractor_debug0(asgi_client):
+    """Extractor path should expose EXTRACTOR_* pipeline_marker even when debug=0."""
+    resp = await asgi_client.post(
+        "/api/query",
+        json={
+            "question": "What time should I arrive on my first day?",
+            "stream": False,
+            "debug": 0,
+            "mode": "full",
+            "top_k": 4,
+            "conversation_id": None,
+            "doc_ids": None,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert "pipeline_marker" in data, "pipeline_marker must be present on all /api/query responses"
+    assert isinstance(data["pipeline_marker"], str)
+    assert data["pipeline_marker"].startswith("EXTRACTOR_"), data["pipeline_marker"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_marker_llm_validated_debug0(asgi_client):
+    """Non-extractor path with LLM answer should expose LLM_VALIDATED at debug=0."""
+    resp = await asgi_client.post(
+        "/api/query",
+        json={
+            "question": "What is the vacation policy?",
+            "stream": False,
+            "debug": 0,
+            "mode": "full",
+            "top_k": 4,
+            "conversation_id": None,
+            "doc_ids": None,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert "pipeline_marker" in data
+    assert isinstance(data["pipeline_marker"], str)
+    assert data["pipeline_marker"] == "LLM_VALIDATED"
+    # Should not be a forced refusal for an in-domain policy question
+    assert data.get("refused") in (False, None)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_marker_forced_refusal(asgi_client):
+    """Refusal responses must expose FORCED_REFUSAL and refused=true."""
+    resp = await asgi_client.post(
+        "/api/query",
+        json={
+            "question": "What is the meaning of life?",
+            "stream": False,
+            "debug": 0,
+            "mode": "full",
+            "top_k": 4,
+            "conversation_id": None,
+            "doc_ids": None,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert "pipeline_marker" in data
+    assert isinstance(data["pipeline_marker"], str)
+    assert data["pipeline_marker"] == "FORCED_REFUSAL"
+    assert data.get("refused") is True

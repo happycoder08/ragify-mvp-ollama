@@ -25,7 +25,7 @@ async def api_demo_verify():
     for q in demo_queries:
         try:
             # Run query with debug=1, no streaming
-            gen, sources, evidence, context, debug_info = await query_collection(
+            gen, sources, evidence, context, debug_info, decision = await query_collection(
                 tenant_id="default",
                 question=q,
                 top_k=4,
@@ -138,6 +138,8 @@ from app.schemas.query import (
     EvidenceItem,
     SourceItem,
     DebugInfo,
+    AnswerDecision,
+    DecisionType,
 )
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -948,7 +950,16 @@ async def query(
     
     # Query includes: embedding, retrieval, filtering, prompt building, LLM generation
     query_start = time.time()
-    answer_gen, sources, evidence, context_text, debug_payload = await answer_question(tenant_id, payload.question, top_k, mode=mode, conversation_history=conversation_history, doc_ids=payload.doc_ids, debug=payload.debug, request_id=request_id)
+    answer_gen, sources, evidence, context_text, debug_payload, decision = await answer_question(
+        tenant_id,
+        payload.question,
+        top_k,
+        mode=mode,
+        conversation_history=conversation_history,
+        doc_ids=payload.doc_ids,
+        debug=payload.debug,
+        request_id=request_id,
+    )
     # Temporary: log debug keys
     if isinstance(debug_payload, dict):
         logger.info(f"DEBUG_KEYS request_id={debug_payload.get('request_id')} keys={list(debug_payload.keys())}")
@@ -977,6 +988,26 @@ async def query(
     context_preview = context_text[:200] if context_text else ''
     logger.info(f"QUERY_DEBUG request_id={request_id} retrieved_count={retrieved_count} selected_count={selected_count} refused={refused} refusal_reason={refusal_reason} selected_source={selected_source} selected_chunk_id={selected_chunk_id} selected_header={selected_header[:80]} evidence_count={evidence_count} first_evidence_chunk_id={first_evidence_chunk_id} context_len={len(context_text)} context_preview={context_preview}")
     logger.info(f"ANSWER_GEN_TYPE request_id={request_id} type={type(answer_gen)}")
+
+    # Derive a high-level pipeline marker for the response that is always present
+    pipeline_marker = "LLM_VALIDATED"
+    decision_type = getattr(decision, "decision_type", None)
+    refused_decision = bool(getattr(decision, "refused", False))
+    debug_marker = ""
+    if isinstance(debug_payload, dict):
+        debug_marker = debug_payload.get("pipeline_marker") or ""
+
+    # 1) Deterministic extractor paths: prefer exact EXTRACTOR_* marker from debug
+    if debug_marker.startswith("EXTRACTOR_") or (
+        decision_type == DecisionType.EXTRACTED and debug_marker.startswith("EXTRACTOR")
+    ):
+        pipeline_marker = debug_marker or "EXTRACTOR"
+    # 2) Forced refusal / validation failure
+    elif refused_decision or decision_type in (DecisionType.FORCED_REFUSAL, DecisionType.VALIDATION_FAILED):
+        pipeline_marker = "FORCED_REFUSAL"
+    # 3) Default: validated LLM answer with evidence
+    else:
+        pipeline_marker = "LLM_VALIDATED"
     
     # Extract collection metadata for debug info
     collection_name = f"documents_{tenant_id}"
@@ -1083,6 +1114,12 @@ async def query(
         }
         debug_info_dict["debug_trace"] = debug_trace
     
+    # Overlay the authoritative decision flags onto debug_info
+    if payload.debug >= 1 and isinstance(decision, AnswerDecision):
+        debug_info_dict["refused"] = decision.refused
+        if decision.refusal_reason is not None:
+            debug_info_dict["refusal_reason"] = decision.refusal_reason
+
     debug_info = DebugInfo(**debug_info_dict)
 
     # Fix: define selected_chunks for use below
@@ -1118,15 +1155,10 @@ async def query(
 
     # If stream is False, return a normal JSON response
     if hasattr(payload, "stream") and payload.stream is False:
-        # GROUNDING ENFORCEMENT: If no evidence, no context, or canonical refusal message, return standardized refusal
+        # GROUNDING ENFORCEMENT: rely on explicit decision from rag_service
         refusal_answer = "The document does not specify this."
-        is_refused = (
-            (isinstance(selected_chunks, dict) and selected_chunks.get("refused", False)) or
-            not evidence or not context_text.strip()
-        )
-        refusal_reason = (
-            selected_chunks.get("refusal_reason", "NOT_FOUND") if isinstance(selected_chunks, dict) else "NOT_FOUND"
-        )
+        is_refused = bool(decision and decision.refused)
+        refusal_reason = decision.refusal_reason or "NOT_FOUND"
         # Collect the full answer from the generator if needed
         full_answer = ""
         if hasattr(answer_gen, '__aiter__'):
@@ -1143,31 +1175,23 @@ async def query(
         if payload.debug >= 2 and 'debug_trace' in debug_info_dict:
             debug_info_dict['debug_trace']['streamed_token_preview'] = full_answer[:200]
 
-        # If the answer is or contains the canonical refusal message,
-        # or evidence/context is empty, treat as refusal.
-        contract_violation = (
-            full_answer.strip() == refusal_answer
-            or is_refused
-            or (refusal_answer in full_answer)
-        )
-        # Hard guard: If refused is false, answer MUST NOT contain refusal phrase
-        invariant_violation = False
-        if not is_refused and refusal_answer in full_answer:
-            invariant_violation = True
-            contract_violation = True
-            logger.warning("[non-stream] Hard guard violation: refused=false but answer contains refusal phrase for request_id=%s", request_id)
-        
-        # Set invariant_violation in debug_info if debug >= 1
-        if payload.debug >= 1 and invariant_violation:
-            debug_info_dict["invariant_violation"] = True
-            
-        if contract_violation:
+        # Safety check (log-only): answer matches refusal phrase but refused=False
+        if (not is_refused) and full_answer.strip() == refusal_answer:
+            logger.error(
+                "[/api/query] Inconsistent state: refused=False but answer equals canonical refusal phrase. request_id=%s",
+                request_id,
+            )
+            if payload.debug >= 1 and isinstance(debug_info, DebugInfo):
+                debug_info.refusal_phrase_in_non_refusal_answer = True
+
+        if is_refused:
             final_response = QueryFinalResponse(
                 answer=refusal_answer,
                 refused=True,
                 refusal_reason=refusal_reason,
                 evidence=[],
                 sources=[],
+                pipeline_marker=pipeline_marker,
                 debug_info=debug_info if payload.debug >= 1 else None
             )
             return JSONResponse(content=final_response.dict(exclude_none=True))
@@ -1194,6 +1218,7 @@ async def query(
             refusal_reason=None,
             evidence=evidence,
             sources=source_items,
+            pipeline_marker=pipeline_marker,
             debug_info={
                 **debug_info.dict(exclude_none=True),
                 "retrieved_chunks_top20": selected_chunks.get("retrieved_chunks_top20") if isinstance(selected_chunks, dict) else []
@@ -1210,8 +1235,8 @@ async def query(
         yield f"event: debug\n"
         yield f"data: {json.dumps(debug_info.dict(exclude_none=True))}\n\n"
 
-        is_refused = isinstance(selected_chunks, dict) and selected_chunks.get("refused", False)
-        refusal_reason = selected_chunks.get("refusal_reason", "NOT_FOUND") if isinstance(selected_chunks, dict) else "NOT_FOUND"
+        is_refused = bool(decision and decision.refused)
+        refusal_reason = decision.refusal_reason or "NOT_FOUND"
         refusal_answer = "The document does not specify this."
         # Collect the full answer from the generator if needed
         async for chunk in answer_gen:
@@ -1228,35 +1253,16 @@ async def query(
         # Debug log for streaming final answer
         logger.info(f"FINAL_ANSWER request_id={request_id} answer_len={len(full_answer)} preview={full_answer[:200]}")
 
-        # Enforce contract before emitting final
-        contract_violation = False
-        invariant_violation = False
-        if (
-            is_refused or
-            not evidence or
-            not context_text.strip() or
-            full_answer.strip() == refusal_answer or
-            (refusal_answer in full_answer)
-        ):
-            contract_violation = True
-        # Hard guard: If refused is false, answer MUST NOT contain refusal phrase
-        if not is_refused and refusal_answer in full_answer:
-            invariant_violation = True
-            contract_violation = True
-            logger.warning("[stream_response] Hard guard violation: refused=false but answer contains refusal phrase for request_id=%s", request_id)
-        
-        # Set invariant_violation in debug_info if debug >= 1
-        if payload.debug >= 1 and invariant_violation:
-            debug_info_dict["invariant_violation"] = True
-            
-        if contract_violation:
-            logger.warning("[stream_response] Coercing to refusal: contract violation (refused=%s, evidence=%d, context empty=%s, answer=refusal, invariant_violation=%s) for request_id=%s", is_refused, len(evidence), not context_text.strip(), invariant_violation, request_id)
+        # Enforce decision before emitting final
+        if is_refused:
+            logger.warning("[stream_response] Coercing to refusal based on explicit decision (refused=%s, reason=%s) for request_id=%s", is_refused, refusal_reason, request_id)
             final_response = QueryFinalResponse(
                 answer=refusal_answer,
                 refused=True,
                 refusal_reason=refusal_reason,
                 evidence=[],
                 sources=[],
+                pipeline_marker=pipeline_marker,
                 debug_info=debug_info if payload.debug >= 1 else None
             )
             yield f"event: final\n"
@@ -1278,12 +1284,22 @@ async def query(
                     filename=src,
                     chunk_id=None
                 ))
+        # Safety check (log-only): answer matches refusal phrase but refused=False
+        if (not is_refused) and full_answer.strip() == refusal_answer:
+            logger.error(
+                "[/api/query:stream] Inconsistent state: refused=False but answer equals canonical refusal phrase. request_id=%s",
+                request_id,
+            )
+            if payload.debug >= 1 and isinstance(debug_info, DebugInfo):
+                debug_info.refusal_phrase_in_non_refusal_answer = True
+
         final_response = QueryFinalResponse(
             answer=full_answer,
             refused=False,
             refusal_reason=None,
             evidence=evidence,
             sources=source_items,
+            pipeline_marker=pipeline_marker,
             debug_info=debug_info if payload.debug >= 1 else None
         )
         logger.info("Sending final structured response for request_id=%s", request_id)

@@ -5,7 +5,7 @@ Enforces strict typing and validation for /api/query endpoint.
 """
 
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, validator, root_validator
 
 
@@ -17,6 +17,38 @@ class AnswerSchema(Enum):
     BOOLEAN_SPECIFIED = "BOOLEAN_SPECIFIED"
     LOCATION_OR_CONTACT = "LOCATION_OR_CONTACT"
     NOT_FOUND_EXPLICIT = "NOT_FOUND_EXPLICIT"
+
+
+class DecisionType(str, Enum):
+    """How the final answer decision was produced."""
+
+    EXTRACTED = "EXTRACTED"            # Deterministic extractor (wifi, arrival time, etc.)
+    LLM_VALIDATED = "LLM_VALIDATED"    # Passed schema + grounding validation
+    FORCED_REFUSAL = "FORCED_REFUSAL"  # Forced to canonical refusal (coverage, gate, invariants)
+    VALIDATION_FAILED = "VALIDATION_FAILED"  # LLM output failed validation even after retry
+
+
+class AnswerDecision(BaseModel):
+    """Final decision for a query, independent of answer text.
+
+    This is produced inside rag_service.query_collection and consumed by /api/query
+    so the endpoint does not need to inspect answer_text to infer refusal.
+    """
+
+    decision_type: DecisionType = Field(..., description="How the answer/refusal was chosen")
+    refused: bool = Field(..., description="Whether the query was ultimately refused")
+    refusal_reason: Optional[str] = Field(default=None, description="Reason for refusal, if any")
+    answer_schema: Optional[AnswerSchema] = Field(default=None, description="Schema used for this answer")
+    invariant_violation: Optional[bool] = Field(default=None, description="True if schema invariant was violated")
+    validation_failed: Optional[bool] = Field(default=None, description="True if schema validation failed after retry")
+    final_answer_text: Optional[str] = Field(
+        default=None,
+        description="Authoritative final answer text after validation (may differ from streamed first pass)",
+    )
+    validation_meta: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Structured metadata about validation: first/second pass validity, retries, invariant checks, etc.",
+    )
 
 
 class QueryRequest(BaseModel):
@@ -96,7 +128,11 @@ class DebugInfo(BaseModel):
     selected_headings: Optional[List[str]] = Field(default=None, description="List of headings used")
     context_chunks_count: Optional[int] = Field(default=None, description="Number of chunks concatenated")
     context_text_chars: Optional[int] = Field(default=None, description="Length of final context text")
-    invariant_violation: Optional[bool] = Field(default=None, description="Set if refused=false but answer contains canonical refusal phrase")
+    invariant_violation: Optional[bool] = Field(default=None, description="Historical flag for schema invariants (deprecated)")
+    refusal_phrase_in_non_refusal_answer: Optional[bool] = Field(
+        default=None,
+        description="Set if refused=False but answer equals the canonical refusal phrase",
+    )
     answer_schema: Optional[AnswerSchema] = Field(default=None, description="Answer schema classification")
 
 
@@ -114,6 +150,14 @@ class QueryFinalResponse(BaseModel):
     refusal_reason: Optional[str] = Field(default=None, description="Reason for refusal (NOT_FOUND, LOW_SUPPORT, etc.)")
     evidence: List[EvidenceItem] = Field(default_factory=list, description="Supporting evidence snippets")
     sources: List[SourceItem] = Field(default_factory=list, description="Source document references")
+    pipeline_marker: str = Field(
+        ...,
+        description=(
+            "High-level pipeline mode marker: EXTRACTOR_* for deterministic "
+            "extractors, LLM_VALIDATED for validated LLM answers, or "
+            "FORCED_REFUSAL when the system forces a canonical refusal."
+        ),
+    )
     debug_info: Optional[DebugInfo] = Field(default=None, description="Optional debug diagnostics")
     
     @root_validator
@@ -125,27 +169,20 @@ class QueryFinalResponse(BaseModel):
         evidence = values.get('evidence', [])
         sources = values.get('sources', [])
         refusal_answer = "The document does not specify this."
-
-        # If answer is the canonical refusal message, refused must be True
-        if answer == refusal_answer and not refused:
-            logging.warning("[QueryFinalResponse] Coercing to refusal: answer is refusal message but refused==False.")
-            values['refused'] = True
-            values['evidence'] = []
-            values['sources'] = []
-            return values
-
-        # If refused, must use canonical message
+        
+        # If refused, must use canonical message (this enforces content for an
+        # explicit refusal decision, but never infers refusal from content).
         if refused and answer != refusal_answer:
             raise ValueError("Refused queries must use canonical refusal message: 'The document does not specify this.'")
 
-        # If not refused, must have evidence and sources and not be the refusal message
+        # If not refused but evidence or sources are empty or the answer looks
+        # like a refusal, only log; do not coerce. /api/query is responsible
+        # for deciding refused based on structured signals (AnswerDecision).
         if not refused:
             if len(evidence) == 0 or len(sources) == 0 or answer == refusal_answer:
-                logging.warning("[QueryFinalResponse] Coercing to refusal: refused==False but evidence/sources empty or answer is refusal message.")
-                values['refused'] = True
-                values['answer'] = refusal_answer
-                values['evidence'] = []
-                values['sources'] = []
+                logging.error(
+                    "[QueryFinalResponse] Inconsistent non-refusal: refused==False but evidence/sources empty or answer is refusal message."
+                )
         return values
     
     class Config:
@@ -154,6 +191,7 @@ class QueryFinalResponse(BaseModel):
                 "answer": "Employees receive 15 days of vacation per year.",
                 "refused": False,
                 "refusal_reason": None,
+                "pipeline_marker": "LLM_VALIDATED",
                 "evidence": [
                     {
                         "snippet": "All employees receive 15 days of vacation per year",

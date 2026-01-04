@@ -1,0 +1,23 @@
+OFFICE DIRECTORY (v1)
+=====================
+
+OFFICE ADDRESS
+1234 Main Street
+Suite 300
+Chicago, IL 60601
+
+RECEPTION
+- Location: 3rd floor, main reception
+- Phone: (555) 010-1000
+
+SECURITY DESK
+- Location: Lobby
+- Phone: (555) 010-1010
+
+FACILITIES
+- Email: facilities@company.example
+- Phone: (555) 010-3000
+
+WIFI
+- SSID: Company-Guest
+- Password: welcome2026

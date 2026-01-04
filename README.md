@@ -72,6 +72,18 @@ A production-ready Retrieval-Augmented Generation (RAG) system with **multi-tena
 - **Context-Aware Generation**: Answers strictly based on indexed documents only
 - **Debug Capabilities**: Detailed retrieval and processing information for troubleshooting
 
+### Conversations & History
+- **Conversation Threads**: Conversations persisted per tenant with titles and timestamps
+- **Message History**: Both user and assistant messages stored with optional source metadata
+- **Context Reuse**: `/api/query` can take a `conversation_id` and reuse the last N turns
+- **Cleanup APIs**: Endpoints to list, delete, and inspect conversation history per tenant
+
+### Guardrails & Rate Limiting
+- **Upload Guardrails**: Limits on file size, count, and allowed extensions per tenant
+- **Rate Limiting**: Per-tenant request and upload-size quotas with `/api/rate-limit-status`
+- **Grounding Gate**: Configurable thresholds to require sufficient evidence before answering
+- **Tenant-Specific Policies**: Guardrail config retrieved via `/api/guardrails`
+
 ### Quality Assurance
 - **Comprehensive Testing**: 50+ test cases covering all major functionality
 - **Mock Provider**: Deterministic responses for CI/CD pipelines
@@ -106,7 +118,7 @@ See [SETUP_WITHOUT_DOCKER.md](SETUP_WITHOUT_DOCKER.md) for detailed instructions
 ```bash
 # Pull required models
 ollama pull nomic-embed-text
-ollama pull llama3
+ollama pull llama3.2:1b  # or `llama3`
 
 # Verify Ollama is running
 curl http://localhost:11434/api/tags
@@ -146,17 +158,37 @@ Open http://localhost:8000 in your browser.
 
 ### Public Endpoints
 - `POST /api/login` - Authenticate user and get JWT token
+- `GET /health` - Basic health check (status, mock mode, active RAGIFY mode)
+- `GET /api/system/config` - Active RAG configuration (mode, tokens, top_k, provider)
+- `GET /` - Serves main SPA (static frontend)
 
 ### Protected Endpoints (Require JWT)
-- `GET /api/config` - Get tenant-specific configuration
-- `POST /api/upload` - Upload and index documents (supports PDF, DOCX, TXT)
+- `GET /api/config` - Get tenant-specific branding/config
+- `GET /api/guardrails` - Get tenant-specific guardrail limits (upload and query constraints)
+- `GET /api/rate-limit-status` - Current rate limit usage for the tenant
+- `GET /api/debug` - High-level runtime debug info (providers, collection stats, recent docs)
+- `GET /api/health/deps` - Dependency health (Ollama + Chroma) for the current tenant
+- `POST /api/upload` - Upload and index documents (PDF, DOCX, TXT) with background processing
 - `POST /api/query` - Advanced document querying with intelligent retrieval
   - **Broad Question Handling**: Automatic context expansion for comprehensive questions
-  - **Evidence Citations**: Responses include chunk IDs for source verification
-  - **Streaming Response**: Real-time answer generation
-  - **Debug Mode**: Optional detailed processing information
+  - **Evidence Citations**: Responses include chunk IDs and evidence snippets
+  - **Streaming Response**: Server-sent events (`event: token` / `event: final`)
+  - **Debug Mode**: Optional structured `debug_info` with retrieval and grounding details
 - `GET /api/documents` - List all documents for current tenant with status tracking
-- `POST /api/reset` - Reset tenant's vector store and document index
+- `GET /api/documents/{doc_id}/status` - Status of a single document (pending/indexed/failed)
+- `POST /api/documents/{doc_id}/reindex` - Re-run indexing pipeline for one document
+- `POST /api/documents/purge` - Delete all tenant documents (metadata + files) and reset vectors
+- `POST /api/reset` - Reset the current tenant's vector store (destructive)
+- **Conversations API**:
+  - `POST /api/conversations` - Create a conversation
+  - `GET /api/conversations` - List recent conversations for the tenant
+  - `GET /api/conversations/{conversation_id}` - Get conversation with messages
+  - `POST /api/conversations/{conversation_id}/messages` - Append a message
+  - `DELETE /api/conversations/{conversation_id}` - Delete a conversation
+- **Debug Utilities**:
+  - `GET /api/debug/find_chunks` - Search indexed chunks for a substring (per-tenant)
+- **Demo Utilities (demo mode only)**:
+  - `POST /api/demo-verify` - Run a small suite of demo queries to verify evidence coverage
 
 ### Response Formats
 
@@ -164,28 +196,36 @@ Open http://localhost:8000 in your browser.
 ```json
 {
   "answer": "Streaming text response with evidence-based information...",
-  "sources": ["document1.pdf", "document2.docx"],
+  "refused": false,
+  "refusal_reason": null,
+  "sources": [
+    {
+      "doc_id": 1,
+      "filename": "document1.pdf",
+      "chunk_id": "doc1_chunk_5"
+    }
+  ],
   "evidence": [
     {
       "snippet": "Relevant text excerpt...",
       "chunk_id": "doc1_chunk_5",
       "heading": "First Day Checklist",
-      "doc_id": "doc1",
+      "doc_id": 1,
       "anchor_type": "TIME"
     }
   ],
-  "debug": {
-    "retrieved": 25,
-    "selected": 8,
+  "debug_info": {
+    "retrieved_count": 25,
+    "selected_count": 8,
     "context_length": 2100,
-    "pipeline_marker": "EXTRACTOR_RECEPTION_LOCATION"
+    "collection_name": "documents_default__MockEmbedder__384"
   }
 }
 ```
-
+ 
 ### Other
-- `GET /health` - Health check endpoint
-- `GET /` - Redirects to login page
+- `GET /health` - Basic health check
+- `GET /` - Main application UI
 
 ## 🗂️ Project Structure
 
@@ -288,16 +328,30 @@ See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `RAGIFY_MODE` | `demo` | Global mode: `dev`, `demo`, or `prod` (see CONFIG_GUIDE.md) |
 | `DATABASE_URL` | `postgresql://ragify:ragify@localhost:5432/ragify_db` | PostgreSQL connection string |
 | `JWT_SECRET_KEY` | `your-secret-key-change-in-production` | Secret key for JWT signing |
 | `JWT_ALGORITHM` | `HS256` | JWT algorithm |
 | `JWT_EXPIRY_HOURS` | `24` | Token expiry time |
 | `LLM_PROVIDER` | `ollama` | LLM backend (`ollama`, `openai`, `mock`) |
+| `LLM_MODEL` | `llama3.2:1b` | LLM model name for the active provider |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `RAGIFY_OLLAMA_TIMEOUT` | `300` | Timeout for Ollama requests |
 | `OPENAI_API_KEY` | - | OpenAI API key (if using `openai` provider) |
 | `MOCK_UNGROUNDED` | `false` | Enable ungrounded answers for mock provider |
 | `RAGIFY_MOCK` | `0` | Enable mock mode (no Ollama/Chroma) |
+| `VECTOR_DIR` | `vectorstore/` | Directory where ChromaDB collections are persisted |
+| `RERANKER_PROVIDER` | `none` | Optional reranker backend (`none`, `jina`, `cohere`) |
+| `APP_MODE` | - | Set to `ci` to force CI/test wiring (mock providers, inline tasks) |
+
+### Modes (dev / demo / prod)
+
+RAGify centralizes most tuning in `RAGIFY_MODE` (see [CONFIG_GUIDE.md](CONFIG_GUIDE.md)):
+- **dev**: full features, verbose logging, generous limits (unlimited tokens, more chunks), best for development and debugging.
+- **demo** (default): optimized for fast, safe responses (smaller token budget, fewer chunks, stricter thresholds) for live demos.
+- **prod**: balanced quality/speed with tighter defaults, reranking enabled by default, suitable for production.
+
+You can inspect the active config at runtime via `GET /api/system/config`, and still override specific settings with env vars (for example `LLM_PROVIDER`, `LLM_MODEL`, or `RAGIFY_OLLAMA_TIMEOUT`).
 
 ### LLM Provider Options
 

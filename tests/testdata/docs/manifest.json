@@ -10,6 +10,87 @@
     ]
   },
   {
+    "file": "01_Employee_Onboarding_Guide.txt",
+    "must_contain": [
+      "ARRIVE AT THE OFFICE (8:00 AM)",
+      "main reception on the 3rd floor",
+      "WORKSPACE SETUP (2:00 PM - 3:00 PM)"
+    ]
+  },
+  {
+    "file": "02_IT_Setup_Guide.txt",
+    "must_contain": [
+      "MFA REQUIREMENT",
+      "Multi-factor authentication (MFA) is REQUIRED for email and VPN access.",
+      "VPN SETUP (REMOTE WORK)",
+      "it-helpdesk@company.example"
+    ]
+  },
+  {
+    "file": "03_Benefits_Policy_2025.txt",
+    "must_contain": [
+      "15 vacation days",
+      "10 sick days",
+      "first day of the month after your start date"
+    ]
+  },
+  {
+    "file": "04_Benefits_Policy_2026.txt",
+    "must_contain": [
+      "20 vacation days",
+      "10 sick days",
+      "first day of the month after your start date"
+    ]
+  },
+  {
+    "file": "05_Hybrid_Work_Policy.txt",
+    "must_contain": [
+      "Standard schedule: 3 days in office, 2 days remote.",
+      "VPN is required for remote work.",
+      "MFA is required for VPN access."
+    ]
+  },
+  {
+    "file": "06_Office_Security_Policy.txt",
+    "must_contain": [
+      "Badge sharing is prohibited.",
+      "Visitors are allowed ONLY if escorted by an employee at all times.",
+      "Do not allow unauthorized individuals to enter behind you through secured doors."
+    ]
+  },
+  {
+    "file": "07_Office_Directory.txt",
+    "must_contain": [
+      "1234 Main Street",
+      "Chicago, IL 60601",
+      "Password: welcome2026"
+    ]
+  },
+  {
+    "file": "08_Emergency_Procedures.txt",
+    "must_contain": [
+      "EMERGENCY PROCEDURES (v1)",
+      "North parking lot.",
+      "Call 911 first."
+    ]
+  },
+  {
+    "file": "09_Facilities_FAQ.txt",
+    "must_contain": [
+      "PARKING",
+      "Parking passes are issued on your first day at reception.",
+      "Contact the security desk immediately: (555) 010-1010"
+    ]
+  },
+  {
+    "file": "10_Engineering_Onboarding_Addendum.txt",
+    "must_contain": [
+      "ENGINEERING ONBOARDING ADDENDUM (v1)",
+      "#eng-announcements",
+      "Engineering Manager: eng-manager@company.example"
+    ]
+  },
+  {
     "file": "facilities_parking.md",
     "must_contain": [
       "PARK-4421",

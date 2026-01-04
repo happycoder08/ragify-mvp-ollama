@@ -3,80 +3,117 @@
     "id": "arrival_time",
     "question": "What time should I arrive on my first day?",
     "expected_anchor": "8:00 AM",
-    "expected_file": "onboarding_guide.txt",
+    "expected_file": "01_Employee_Onboarding_Guide.txt",
     "intent": "time_arrival",
-    "expect_refused": false
+    "expect_refused": false,
+    "expected_schema": "FACT_SINGLE",
+    "expected_mode": "EXTRACTED",
+    "must_include": [
+      "8:00 AM"
+    ]
   },
   {
-    "id": "orientation_start",
-    "question": "When does orientation start?",
-    "expected_anchor": "9:00 AM",
-    "expected_file": "onboarding_guide.txt",
-    "intent": "time",
-    "expect_refused": false
-  },
-  {
-    "id": "team_lunch",
-    "question": "When is team lunch?",
-    "expected_anchor": "12:00 PM",
-    "expected_file": "onboarding_guide.txt",
-    "intent": "time",
-    "expect_refused": false
+    "id": "workspace_setup",
+    "question": "How do I set up my workspace?",
+    "expected_file": "01_Employee_Onboarding_Guide.txt",
+    "intent": "workspace_setup",
+    "expect_refused": false,
+    "expected_schema": "CHECKLIST_PROCEDURE",
+    "expected_mode": "CITED",
+    "must_include_all_in_evidence": [
+      "Set up your desk/workstation",
+      "Install required software",
+      "Join team Slack channels",
+      "Add yourself to team calendar"
+    ],
+    "min_bullets_in_answer": 2,
+    "forbidden_sources": [
+      "02_IT_Setup_Guide.txt",
+      "10_Engineering_Onboarding_Addendum.txt"
+    ]
   },
   {
     "id": "wifi_password",
-    "question": "What is the WiFi password?",
-    "expected_anchor": "WIFI_PASSWORD: RAGIFY-1234",
-    "expected_file": "it_policy.txt",
-    "intent": "it_access",
-    "expect_refused": false
+    "question": "What is the wifi password?",
+    "expected_anchor": "welcome2026",
+    "expected_file": "07_Office_Directory.txt",
+    "intent": "wifi_password",
+    "expect_refused": false,
+    "expected_schema": "FACT_SINGLE",
+    "expected_mode": "EXTRACTED",
+    "must_include": [
+      "welcome2026"
+    ]
   },
   {
-    "id": "vpn_profile",
-    "question": "What VPN profile should I use?",
-    "expected_anchor": "RAGIFY-VPN",
-    "expected_file": "it_policy.txt",
-    "intent": "it_access",
-    "expect_refused": false
+    "id": "office_address",
+    "question": "What is the office address?",
+    "expected_anchor": "1234 Main Street",
+    "expected_file": "07_Office_Directory.txt",
+    "intent": "location_office",
+    "expect_refused": false,
+    "expected_schema": "LOCATION_OR_CONTACT",
+    "expected_mode": "CITED",
+    "must_include_all_in_evidence": [
+      "Chicago, IL 60601"
+    ]
   },
   {
-    "id": "parking_code",
-    "question": "What is the parking gate code?",
-    "expected_anchor": "PARK-4421",
-    "expected_file": "facilities_parking.md",
-    "intent": "location",
-    "expect_refused": false
+    "id": "visitors_escorted",
+    "question": "Are visitors allowed without an escort?",
+    "expected_file": "06_Office_Security_Policy.txt",
+    "intent": "visitor_policy_boolean",
+    "expect_refused": false,
+    "expected_schema": "BOOLEAN_SPECIFIED",
+    "expected_mode": "CITED",
+    "must_include": [
+      "No"
+    ]
   },
   {
-    "id": "daily_standup",
-    "question": "When does daily standup start?",
-    "expected_anchor": "10:30 AM",
-    "expected_file": "employee_handbook_excerpt.pdf",
-    "intent": "time",
-    "expect_refused": false
+    "id": "policy_excerpt_badge_sharing",
+    "question": "What is the policy on badge sharing?",
+    "expected_file": "06_Office_Security_Policy.txt",
+    "intent": "policy_excerpt_badges",
+    "expect_refused": false,
+    "expected_schema": "POLICY_EXCERPT",
+    "expected_mode": "CITED",
+    "must_include_all_in_evidence": [
+      "Badge sharing is prohibited"
+    ]
   },
   {
-    "id": "pto_days",
-    "question": "How many PTO days do new hires receive?",
-    "expected_anchor": "10 days",
-    "expected_file": "benefits_overview.txt",
-    "intent": "benefits",
-    "expect_refused": false
+    "id": "emergency_meeting_point",
+    "question": "Where is the designated meeting point during evacuation?",
+    "expected_anchor": "North parking lot",
+    "expected_file": "08_Emergency_Procedures.txt",
+    "intent": "evac_meeting_point",
+    "expect_refused": false,
+    "expected_schema": "FACT_SINGLE",
+    "expected_mode": "CITED",
+    "must_include": [
+      "North parking lot"
+    ]
   },
   {
-    "id": "edge_token",
-    "question": "What is the unique token in the edge cases document?",
-    "expected_anchor": "UNIQUE_TOKEN_EDGE_0B77CC",
-    "expected_file": "edge_cases_chunking.txt",
-    "intent": "edge",
-    "expect_refused": false
+    "id": "not_found_pets",
+    "question": "Are pets allowed in the office?",
+    "expected_file": "",
+    "intent": "not_found_pets",
+    "expect_refused": true,
+    "expected_schema": "NOT_FOUND_EXPLICIT",
+    "expected_mode": "NOT_FOUND",
+    "must_include": [
+      "The document does not specify this."
+    ]
   },
   {
-    "id": "refusal_ceo",
-    "question": "What is the CEO's favorite color?",
-    "expected_anchor": null,
-    "expected_file": null,
-    "intent": "refusal",
-    "expect_refused": true
+    "id": "benefits_conflict_vacation",
+    "question": "How many vacation days do full-time employees receive per year?",
+    "intent": "benefits_vacation_conflict",
+    "expect_refused": false,
+    "expected_schema": "FACT_SINGLE",
+    "expected_mode": "CITED",
+    "notes": "This question is intentionally ambiguous across 2025 vs 2026 policies. Expected behavior depends on your conflict policy (ask/choose/refuse)."
   }
 ]

@@ -1,0 +1,15 @@
+HYBRID WORK POLICY (v1)
+=======================
+
+OVERVIEW
+- Standard schedule: 3 days in office, 2 days remote.
+
+REQUIREMENTS
+- VPN is required for remote work.
+- MFA is required for VPN access.
+
+EXCEPTIONS
+- Managers may approve fully remote arrangements on a case-by-case basis.
+
+POLICY EXCERPT
+Employees must protect company data by following security guidelines when working remotely.

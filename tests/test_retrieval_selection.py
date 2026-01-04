@@ -21,7 +21,6 @@ async def test_retrieval_selection(standard_questions):
             continue  # Skip refused questions for retrieval tests
             
         question = question_data["question"]
-        expected_filename = question_data["expected_file"]
         
         # Call query_collection directly to test retrieval logic
         answer_gen, sources, evidence_items, context, debug_info = await rag_service.query_collection(

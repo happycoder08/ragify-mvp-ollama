@@ -20,27 +20,27 @@ FACT_SINGLE_GOLDEN = [
     {
         "question": "What time do I arrive my first day?",
         "expected_schema": AnswerSchema.FACT_SINGLE,
-        "sample_response": "You arrive at 8:00 AM (CHUNK_ID=example_1)",
+        "sample_response": "You arrive at 8:00 AM.",
     },
     {
         "question": "When is team lunch?",
         "expected_schema": AnswerSchema.FACT_SINGLE,
-        "sample_response": "Team lunch is at 12:00 PM (CHUNK_ID=example_2)",
+        "sample_response": "Team lunch is at 12:00 PM.",
     },
     {
         "question": "Where is the main reception?",
         "expected_schema": AnswerSchema.FACT_SINGLE,
-        "sample_response": "The main reception is on the first floor (CHUNK_ID=example_3)",
+        "sample_response": "The main reception is on the first floor.",
     },
     {
         "question": "Who is my manager?",
         "expected_schema": AnswerSchema.FACT_SINGLE,
-        "sample_response": "Your manager is John Smith (CHUNK_ID=example_4)",
+        "sample_response": "Your manager is John Smith.",
     },
     {
         "question": "What is the wifi password?",
         "expected_schema": AnswerSchema.FACT_SINGLE,
-        "sample_response": "The wifi password is CompanyWiFi2024 (CHUNK_ID=example_5)",
+        "sample_response": "The wifi password is CompanyWiFi2024.",
     },
 ]
 
@@ -50,27 +50,27 @@ CHECKLIST_PROCEDURE_GOLDEN = [
     {
         "question": "How do I set up my email signature?",
         "expected_schema": AnswerSchema.CHECKLIST_PROCEDURE,
-        "sample_response": "1. Open Outlook and go to settings. (CHUNK_ID=example_1)\n2. Click on signature. (CHUNK_ID=example_1)\n3. Enter your information. (CHUNK_ID=example_1)",
+        "sample_response": "1. Open Outlook and go to settings.\n2. Click on signature.\n3. Enter your information.",
     },
     {
         "question": "What documents do I need to bring?",
         "expected_schema": AnswerSchema.CHECKLIST_PROCEDURE,
-        "sample_response": "1. Government-issued ID. (CHUNK_ID=example_2)\n2. Social security card. (CHUNK_ID=example_2)\n3. Birth certificate. (CHUNK_ID=example_2)",
+        "sample_response": "1. Government-issued ID.\n2. Social security card.\n3. Birth certificate.",
     },
     {
         "question": "How do I get my badge?",
         "expected_schema": AnswerSchema.CHECKLIST_PROCEDURE,
-        "sample_response": "1. Go to HR on first day. (CHUNK_ID=example_3)\n2. Bring your ID. (CHUNK_ID=example_3)\n3. Have your photo taken. (CHUNK_ID=example_3)",
+        "sample_response": "1. Go to HR on first day.\n2. Bring your ID.\n3. Have your photo taken.",
     },
     {
         "question": "What are the first day steps?",
         "expected_schema": AnswerSchema.CHECKLIST_PROCEDURE,
-        "sample_response": "1. Arrive at 8 AM. (CHUNK_ID=example_4)\n2. Check in at reception. (CHUNK_ID=example_4)\n3. Attend orientation. (CHUNK_ID=example_4)",
+        "sample_response": "1. Arrive at 8 AM.\n2. Check in at reception.\n3. Attend orientation.",
     },
     {
         "question": "How do I access the building?",
         "expected_schema": AnswerSchema.CHECKLIST_PROCEDURE,
-        "sample_response": "1. Use your badge at the entrance. (CHUNK_ID=example_5)\n2. Enter through the main door. (CHUNK_ID=example_5)\n3. Take the elevator to your floor. (CHUNK_ID=example_5)",
+        "sample_response": "1. Use your badge at the entrance.\n2. Enter through the main door.\n3. Take the elevator to your floor.",
     },
 ]
 
@@ -80,27 +80,27 @@ POLICY_EXCERPT_GOLDEN = [
     {
         "question": "What is the dress code policy?",
         "expected_schema": AnswerSchema.POLICY_EXCERPT,
-        "sample_response": "- Business casual attire is required (CHUNK_ID=example_1)\n- No jeans or sneakers (CHUNK_ID=example_1)\n- Shirts must be tucked in (CHUNK_ID=example_1)",
+        "sample_response": "- Business casual attire is required\n- No jeans or sneakers\n- Shirts must be tucked in",
     },
     {
         "question": "What are the parking rules?",
         "expected_schema": AnswerSchema.POLICY_EXCERPT,
-        "sample_response": "- Employees may park in designated areas only (CHUNK_ID=example_2)\n- Visitor parking is not permitted (CHUNK_ID=example_2)\n- Parking permits are required (CHUNK_ID=example_2)",
+        "sample_response": "- Employees may park in designated areas only\n- Visitor parking is not permitted\n- Parking permits are required",
     },
     {
         "question": "What is the vacation policy?",
         "expected_schema": AnswerSchema.POLICY_EXCERPT,
-        "sample_response": "- Employees accrue 10 days of vacation per year (CHUNK_ID=example_3)\n- Vacation must be approved in advance (CHUNK_ID=example_3)\n- Maximum carryover is 15 days (CHUNK_ID=example_3)",
+        "sample_response": "- Employees accrue 10 days of vacation per year\n- Vacation must be approved in advance\n- Maximum carryover is 15 days",
     },
     {
         "question": "What are the IT security guidelines?",
         "expected_schema": AnswerSchema.POLICY_EXCERPT,
-        "sample_response": "- All passwords must be changed quarterly (CHUNK_ID=example_4)\n- Do not share login credentials (CHUNK_ID=example_4)\n- Report suspicious emails immediately (CHUNK_ID=example_4)",
+        "sample_response": "- All passwords must be changed quarterly\n- Do not share login credentials\n- Report suspicious emails immediately",
     },
     {
         "question": "What is the code of conduct?",
         "expected_schema": AnswerSchema.POLICY_EXCERPT,
-        "sample_response": "- Maintain professional behavior at all times (CHUNK_ID=example_5)\n- Respect colleagues and clients (CHUNK_ID=example_5)\n- Follow company policies (CHUNK_ID=example_5)",
+        "sample_response": "- Maintain professional behavior at all times\n- Respect colleagues and clients\n- Follow company policies",
     },
 ]
 
@@ -110,22 +110,22 @@ BOOLEAN_SPECIFIED_GOLDEN = [
     {
         "question": "Do I need to bring ID on first day?",
         "expected_schema": AnswerSchema.BOOLEAN_SPECIFIED,
-        "sample_response": "Yes — you need to bring government-issued ID (CHUNK_ID=example_1)",
+        "sample_response": "Yes — you need to bring government-issued ID.",
     },
     {
         "question": "Is there free parking?",
         "expected_schema": AnswerSchema.BOOLEAN_SPECIFIED,
-        "sample_response": "No — parking requires a permit (CHUNK_ID=example_2)",
+        "sample_response": "No — parking requires a permit.",
     },
     {
         "question": "Is there a dress code?",
         "expected_schema": AnswerSchema.BOOLEAN_SPECIFIED,
-        "sample_response": "Yes — business casual is required (CHUNK_ID=example_3)",
+        "sample_response": "Yes — business casual is required.",
     },
     {
         "question": "Do I get a company laptop?",
         "expected_schema": AnswerSchema.BOOLEAN_SPECIFIED,
-        "sample_response": "Yes — laptops are provided on first day (CHUNK_ID=example_4)",
+        "sample_response": "Yes — laptops are provided on first day.",
     },
     {
         "question": "Can I work from home?",
@@ -199,18 +199,13 @@ def _run_schema_test(case):
     is_valid = _validate_response_by_schema(sample_response, expected_schema)
     assert is_valid, f"Sample response validation failed for {expected_schema}: {sample_response}"
     
-    # Test citations are present (except for NOT_FOUND_EXPLICIT and canonical refusals)
-    if expected_schema != AnswerSchema.NOT_FOUND_EXPLICIT:
-        # For BOOLEAN_SPECIFIED, citations are not required if using canonical refusal
-        if not (expected_schema == AnswerSchema.BOOLEAN_SPECIFIED and "the document does not specify this" in sample_response):
-            assert "(CHUNK_ID=" in sample_response, f"No citations in sample response for {expected_schema}"
+    # Answers should never contain inline CHUNK_ID-style citations; citations live in evidence metadata
+    assert "(CHUNK_ID=" not in sample_response, f"Answer text must not contain CHUNK_ID citations: {sample_response}"
     
     # Test structure assertions
     if expected_schema == AnswerSchema.FACT_SINGLE:
-        # Should be single sentence with citation
-        # Remove citation and count sentences
-        response_no_citation = re.sub(r'\s*\(CHUNK_ID=[^)]+\)$', '', sample_response).strip()
-        sentences = re.split(r'[.!?]+', response_no_citation)
+        # Should be a single sentence answer
+        sentences = re.split(r'[.!?]+', sample_response)
         sentences = [s.strip() for s in sentences if s.strip()]
         assert len(sentences) == 1, f"FACT_SINGLE should have exactly 1 sentence: {sample_response}"
         
@@ -229,12 +224,9 @@ def _run_schema_test(case):
     elif expected_schema == AnswerSchema.BOOLEAN_SPECIFIED:
         # Should start with Yes/No
         assert sample_response.startswith(('Yes', 'No')), f"BOOLEAN_SPECIFIED should start with Yes/No: {sample_response}"
-        # If it's "No" with canonical refusal, no citation needed
+        # Canonical refusal text is still allowed for "No" answers
         if "the document does not specify this" in sample_response:
-            pass  # No citation required for canonical refusal
-        else:
-            # Otherwise must have citation
-            assert "(CHUNK_ID=" in sample_response, f"BOOLEAN_SPECIFIED with info should have citation: {sample_response}"
+            pass
         
     elif expected_schema == AnswerSchema.NOT_FOUND_EXPLICIT:
         # Should be exact canonical refusal
