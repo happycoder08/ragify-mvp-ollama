@@ -3,10 +3,20 @@ Canonical schemas for query API request/response.
 
 Enforces strict typing and validation for /api/query endpoint.
 """
+from __future__ import annotations
 
 from enum import Enum
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, validator, root_validator
+
+class ClarificationType(str, Enum):
+    """Type of clarification required from the user."""
+    TIMEFRAME = "TIMEFRAME"
+    DOCUMENT = "DOCUMENT"
+    SCOPE = "SCOPE"
+    LOCATION = "LOCATION"
+    ROLE = "ROLE"
+    OTHER = "OTHER"
 
 
 class AnswerSchema(Enum):
@@ -14,9 +24,30 @@ class AnswerSchema(Enum):
     FACT_SINGLE = "FACT_SINGLE"
     CHECKLIST_PROCEDURE = "CHECKLIST_PROCEDURE"
     POLICY_EXCERPT = "POLICY_EXCERPT"
+    SUMMARY_OVERVIEW = "SUMMARY_OVERVIEW"
     BOOLEAN_SPECIFIED = "BOOLEAN_SPECIFIED"
     LOCATION_OR_CONTACT = "LOCATION_OR_CONTACT"
     NOT_FOUND_EXPLICIT = "NOT_FOUND_EXPLICIT"
+
+
+class ClarificationType(str, Enum):
+    """Type of clarification required from the user."""
+    TIMEFRAME = "TIMEFRAME"
+    DOCUMENT = "DOCUMENT"
+    SCOPE = "SCOPE"
+    LOCATION = "LOCATION"
+    ROLE = "ROLE"
+    OTHER = "OTHER"
+
+
+MAX_CLARIFICATION_OPTIONS: int = 6
+
+
+class ClarificationPayload(BaseModel):
+    """Details about the clarification required."""
+    type: str = Field(..., description="Type of clarification (e.g. TIMEFRAME, DOCUMENT)")
+    question: str = Field(..., description="The question to ask the user")
+    options: Optional[List[str]] = Field(default=None, description="Suggested options for the user")
 
 
 class DecisionType(str, Enum):
@@ -57,6 +88,7 @@ class QueryRequest(BaseModel):
     top_k: int = Field(default=4, ge=1, le=50, description="Number of chunks to retrieve")
     mode: str = Field(default="full", description="Query mode: fast or full")
     conversation_id: Optional[int] = Field(default=None, description="Optional conversation context")
+    conversation_history: Optional[List[Dict[str, str]]] = Field(default=None, description="Optional explicit conversation history")
     doc_ids: Optional[List[int]] = Field(default=None, description="Optional document IDs to filter search scope")
     debug: int = Field(default=0, ge=0, le=2, description="Debug level: 0=off, 1=detailed, 2=verbose")
     stream: bool = Field(default=True, description="If true, stream response as SSE; if false, return JSON response.")
@@ -154,22 +186,42 @@ class QueryFinalResponse(BaseModel):
         ...,
         description=(
             "High-level pipeline mode marker: EXTRACTOR_* for deterministic "
-            "extractors, LLM_VALIDATED for validated LLM answers, or "
-            "FORCED_REFUSAL when the system forces a canonical refusal."
+            "extractors, LLM_VALIDATED for validated LLM answers, "
+            "FORCED_REFUSAL when the system forces a canonical refusal, "
+            "or CLARIFICATION_REQUIRED."
         ),
     )
     debug_info: Optional[DebugInfo] = Field(default=None, description="Optional debug diagnostics")
+    needs_clarification: Optional[bool] = Field(default=None, description="True if the system needs user input to proceed")
+    clarification: Optional[ClarificationPayload] = Field(default=None, description="Details about the required clarification")
     
     @root_validator
     def validate_response_consistency(cls, values):
-        """Validate response consistency: refusal message, evidence, and sources."""
+        """Validate response consistency: refusal message, evidence, sources, and clarification."""
         import logging
         refused = values.get('refused')
         answer = values.get('answer')
         evidence = values.get('evidence', [])
         sources = values.get('sources', [])
+        needs_clarification = values.get('needs_clarification')
+        clarification = values.get('clarification')
+        pipeline_marker = values.get('pipeline_marker')
+        
         refusal_answer = "The document does not specify this."
         
+        # Clarification logic
+        if needs_clarification or clarification is not None:
+            if refused:
+                raise ValueError("Clarification required responses cannot be refused.")
+            if pipeline_marker != "CLARIFICATION_REQUIRED":
+                raise ValueError("Clarification responses must use pipeline_marker='CLARIFICATION_REQUIRED'.")
+            if not clarification:
+                raise ValueError("Clarification details missing for needs_clarification=True.")
+            if answer != clarification.question:
+                raise ValueError("Answer must match clarification question.")
+            # Evidence/sources can be empty for clarification, so we skip the check below
+            return values
+
         # If refused, must use canonical message (this enforces content for an
         # explicit refusal decision, but never infers refusal from content).
         if refused and answer != refusal_answer:
@@ -210,3 +262,75 @@ class QueryFinalResponse(BaseModel):
                 "debug_info": None
             }
         }
+
+
+def build_clarification(question: str, options: Optional[List[str]] = None, type: str = "OTHER") -> QueryFinalResponse:
+    """Helper to build a consistent clarification response."""
+    clarification = ClarificationPayload(
+        question=question,
+        options=options,
+        type=type
+    )
+    return QueryFinalResponse(
+        answer=question,
+        refused=False,
+        pipeline_marker="CLARIFICATION_REQUIRED",
+        needs_clarification=True,
+        clarification=clarification,
+        evidence=[],
+        sources=[]
+    )
+
+def build_question(c_type: ClarificationType, options: Optional[List[str]] = None) -> str:
+    opts = [o for o in (options or []) if isinstance(o, str) and o.strip()]
+    if c_type == ClarificationType.TIMEFRAME:
+        return f"Which timeframe should I use: {' or '.join(opts)}?" if opts else "Which timeframe should I use?"
+    if c_type == ClarificationType.DOCUMENT:
+        return f"Which document should I use: {' or '.join(opts)}?" if opts else "Which document should I use?"
+    if c_type == ClarificationType.SCOPE:
+        return f"Which scope do you mean: {' or '.join(opts)}?" if opts else "What scope do you mean?"
+    if c_type == ClarificationType.LOCATION:
+        return f"Which location: {' or '.join(opts)}?" if opts else "Which location?"
+    if c_type == ClarificationType.ROLE:
+        return f"Which role/team: {' or '.join(opts)}?" if opts else "Which role/team?"
+    return "Can you clarify what you mean?"
+
+
+def normalize_options(options: Optional[List[str]]) -> Optional[List[str]]:
+    if not options:
+        return None
+    clean: List[str] = []
+    seen = set()
+    for o in options:
+        if not isinstance(o, str):
+            continue
+        s = o.strip()
+        if not s or s in seen:
+            continue
+        clean.append(s)
+        seen.add(s)
+        if len(clean) >= MAX_OPTIONS:
+            break
+    return clean or None
+
+
+def build_clarification_payload(
+    c_type: ClarificationType,
+    options: Optional[List[str]] = None,
+    question: Optional[str] = None,
+) -> Dict[str, Any]:
+    norm_opts = normalize_options(options)
+    q = question.strip() if isinstance(question, str) and question.strip() else build_question(c_type, norm_opts)
+    return {
+        "needs_clarification": True,
+        "clarification": {
+            "type": c_type.value,
+            "question": q,
+            **({"options": norm_opts} if norm_opts else {}),
+        },
+        "pipeline_marker": "CLARIFICATION_REQUIRED",
+        "refused": False,
+        "answer": q,
+        "evidence": [],
+        "sources": [],
+    }

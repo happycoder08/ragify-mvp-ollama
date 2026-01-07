@@ -1,6 +1,7 @@
 from typing import List
 import os
 import logging
+import re
 
 from pypdf import PdfReader
 import docx  # python-docx
@@ -62,6 +63,74 @@ def load_file_to_text(path: str) -> str:
         return read_txt(path)
 
 
+def _is_strict_header(text: str) -> bool:
+    """
+    Checks if text consists ONLY of headers/separators (uppercase/title case, underlines).
+    Does NOT check length.
+    """
+    lines = text.splitlines()
+    has_content = False
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        has_content = True
+        # Check for underline/separator lines
+        if all(c in "-=_*~" for c in line):
+            continue
+            
+        # Remove non-letters to check casing
+        letters = "".join(c for c in line if c.isalpha())
+        if not letters:
+            continue
+        
+        # If any line is NOT uppercase and NOT title case, it's content
+        if not (line.isupper() or line.istitle()):
+            return False
+            
+    return has_content
+
+
+def _is_merge_candidate(text: str) -> bool:
+    """
+    Detects if a chunk should be merged (short fragment OR strict header).
+    """
+    if len(text) <= 120:
+        return True
+    return _is_strict_header(text)
+
+
+def _harden_chunks(chunks: List[str]) -> List[str]:
+    """
+    Merges fragment/header chunks with the following chunk.
+    Drops trailing chunks ONLY if they are strict headers.
+    """
+    merged_chunks = []
+    buffer = ""
+    
+    for chunk in chunks:
+        if _is_merge_candidate(chunk):
+             if buffer:
+                 buffer = buffer + "\n" + chunk
+             else:
+                 buffer = chunk
+        else:
+             if buffer:
+                 chunk = (buffer + "\n" + chunk).strip()
+                 buffer = ""
+             merged_chunks.append(chunk)
+    
+    if buffer:
+        # If the tail is just headers, drop it.
+        # If it has content (but was short), keep it.
+        if _is_strict_header(buffer) or not buffer.strip():
+            logger.info(f"Dropping trailing header-only chunk(s): {len(buffer)} chars")
+        else:
+            merged_chunks.append(buffer)
+        
+    return merged_chunks
+
+
 def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
     """
     Simple sliding-window character-based chunking.
@@ -100,7 +169,7 @@ def chunk_text(text: str, chunk_size: int = None, overlap: int = None) -> List[s
         start = end - overlap
         if start < 0:
             start = 0
-    return chunks
+    return _harden_chunks(chunks)
 
 
 def chunk_text_sections(text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
@@ -229,4 +298,4 @@ def chunk_text_sections(text: str, chunk_size: int = None, overlap: int = None) 
                     break
                 start = max(0, end - overlap)
 
-    return chunks
+    return _harden_chunks(chunks)

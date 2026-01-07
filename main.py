@@ -921,7 +921,24 @@ async def query(
     # Retrieve conversation history if conversation_id provided
     conversation_history = []
     conversation = None
-    if payload.conversation_id and db:
+    
+    # 1. Prefer explicit history if provided
+    if payload.conversation_history:
+        # Validate and cap history
+        for msg in payload.conversation_history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if len(content) > 800:
+                content = content[:800]
+            conversation_history.append({"role": role, "content": content})
+            
+    # 2. Fallback to DB history if conversation_id provided (and no explicit history?)
+    # The requirement says "Pass conversation_history into rag_service...".
+    # Usually explicit history overrides or appends. Let's assume override if provided,
+    # or maybe we shouldn't mix them.
+    # If payload.conversation_history is provided, we use it.
+    # If NOT provided, we look up DB.
+    elif payload.conversation_id and db:
         # Verify conversation ownership
         conversation = db.query(Conversation)\
             .filter(Conversation.id == payload.conversation_id, Conversation.tenant_id == tenant_id)\
@@ -1002,10 +1019,13 @@ async def query(
         decision_type == DecisionType.EXTRACTED and debug_marker.startswith("EXTRACTOR")
     ):
         pipeline_marker = debug_marker or "EXTRACTOR"
-    # 2) Forced refusal / validation failure
+    # 2) Clarification required
+    elif debug_marker == "CLARIFICATION_REQUIRED":
+        pipeline_marker = "CLARIFICATION_REQUIRED"
+    # 3) Forced refusal / validation failure
     elif refused_decision or decision_type in (DecisionType.FORCED_REFUSAL, DecisionType.VALIDATION_FAILED):
         pipeline_marker = "FORCED_REFUSAL"
-    # 3) Default: validated LLM answer with evidence
+    # 4) Default: validated LLM answer with evidence
     else:
         pipeline_marker = "LLM_VALIDATED"
     
@@ -1076,6 +1096,11 @@ async def query(
         
         # context_text_chars: length of final context text
         debug_info_dict["context_text_chars"] = len(context_text)
+        
+        # clarification: include if present in debug_payload
+        if isinstance(debug_payload, dict) and "clarification" in debug_payload:
+            debug_info_dict["clarification"] = debug_payload["clarification"]
+
     # Always include retrieved_chunks_top20 if debug enabled
     if payload.debug >= 1:
         if isinstance(debug_payload, dict) and "retrieved_chunks_top20" in debug_payload:
@@ -1196,6 +1221,22 @@ async def query(
             )
             return JSONResponse(content=final_response.dict(exclude_none=True))
 
+        # Handle CLARIFICATION_REQUIRED
+        if pipeline_marker == "CLARIFICATION_REQUIRED":
+            # Extract clarification details from debug_payload
+            clarification_data = debug_payload.get("clarification") if isinstance(debug_payload, dict) else None
+            from app.schemas.query import build_clarification
+            
+            if clarification_data:
+                final_response = build_clarification(
+                    question=clarification_data.get("question", full_answer),
+                    options=clarification_data.get("options"),
+                    type=clarification_data.get("type", "OTHER")
+                )
+                # Attach debug info
+                final_response.debug_info = debug_info if payload.debug >= 1 else None
+                return JSONResponse(content=final_response.dict(exclude_none=True))
+
         # Otherwise, build normal response
         source_items = []
         for src in (sources or []):
@@ -1234,6 +1275,26 @@ async def query(
         logger.info("Starting to stream response for request_id=%s (evidence_count=%d)", request_id, len(evidence))
         yield f"event: debug\n"
         yield f"data: {json.dumps(debug_info.dict(exclude_none=True))}\n\n"
+
+        # Handle CLARIFICATION_REQUIRED in stream
+        if pipeline_marker == "CLARIFICATION_REQUIRED":
+            # Do not stream tokens for clarification, just emit final
+            clarification_data = debug_payload.get("clarification") if isinstance(debug_payload, dict) else None
+            from app.schemas.query import build_clarification
+            
+            # Consume generator to ensure cleanup, but ignore output
+            async for _ in answer_gen: pass
+            
+            if clarification_data:
+                final_response = build_clarification(
+                    question=clarification_data.get("question", ""),
+                    options=clarification_data.get("options"),
+                    type=clarification_data.get("type", "OTHER")
+                )
+                final_response.debug_info = debug_info if payload.debug >= 1 else None
+                yield f"event: final\n"
+                yield f"data: {final_response.json(exclude_none=True)}\n\n"
+                return
 
         is_refused = bool(decision and decision.refused)
         refusal_reason = decision.refusal_reason or "NOT_FOUND"

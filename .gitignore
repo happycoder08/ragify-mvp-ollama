@@ -33,3 +33,26 @@ htmlcov/
 # Local env files
 .env
 env.*
+
+# Logs
+*.log
+*.logs
+backend.logs
+
+# Local debug and scratch scripts
+debug_*.py
+check_*.py
+quick_*.py
+simple_*.py
+inspect_*.py
+get_chunk_text.py
+
+# Temporary test output and artifacts
+test_output.txt
+query_output.txt
+test_policy.txt
+smoke_run.txt
+simple_test.txt
+debug.json
+final.json
+

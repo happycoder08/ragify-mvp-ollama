@@ -469,6 +469,43 @@ def _lexical_overlap_score(query: str, doc: str) -> float:
     return max(0.0, min(2.5, base_score))
 
 
+def _score_chunk_quality(text: str) -> tuple[float, list[str]]:
+    """
+    Analyze chunk text for quality signals.
+    Returns (penalty_score, reasons).
+    Penalty is negative (e.g. -5.0).
+    """
+    penalty = 0.0
+    reasons = []
+    
+    text_stripped = text.strip()
+    if not text_stripped:
+        return -10.0, ["quality:empty"]
+        
+    # 1. Length penalty
+    # Very short chunks are often headers or fragments
+    if len(text_stripped) < 50:
+        penalty -= 2.0
+        reasons.append("quality:short_length")
+    elif len(text_stripped) < 100:
+        penalty -= 0.5
+        reasons.append("quality:medium_length")
+        
+    # 2. Structure penalty (Header-only detection)
+    # If it looks like a header (no punctuation at end, short)
+    lines = text_stripped.split('\n')
+    non_empty_lines = [l for l in lines if l.strip()]
+    
+    if len(non_empty_lines) == 1:
+        line = non_empty_lines[0]
+        # If it's short and doesn't end in punctuation, likely a header
+        if len(line) < 80 and line[-1] not in ".!?":
+            penalty -= 1.5
+            reasons.append("quality:header_like")
+            
+    return penalty, reasons
+
+
 def _hybrid_rerank_score(query: str, doc: str, vector_distance: float) -> float:
     """
     Combine BM25-style lexical overlap and vector distance for hybrid scoring.
@@ -1106,6 +1143,34 @@ def _validate_not_found_explicit_response(response: str) -> bool:
     return response.strip() == "The document does not specify this."
 
 
+def _validate_summary_overview_response(response: str) -> bool:
+    """Validate SUMMARY_OVERVIEW response.
+    
+    Rules:
+    - Must contain at least 3 bullet points (lines starting with '-').
+    - Must NOT contain generic filler phrases.
+    - Must NOT contain citations (handled by invariant check, but good to check here too).
+    """
+    response = (response or "").strip()
+    if not response:
+        return False
+        
+    lines = [line.strip() for line in response.split('\n') if line.strip()]
+    bullets = [line for line in lines if line.startswith('-')]
+    
+    if len(bullets) < 3:
+        return False
+        
+    # Check for filler phrases
+    filler_phrases = ["typically", "generally", "often", "designed to"]
+    response_lower = response.lower()
+    for phrase in filler_phrases:
+        if phrase in response_lower:
+            return False
+            
+    return True
+
+
 def _detect_schema_from_text(response: str) -> Optional[AnswerSchema]:
     """Heuristic detection of schema from raw text, for debugging.
 
@@ -1164,6 +1229,10 @@ def validate_format_by_schema(response: str, schema: AnswerSchema) -> Validation
     elif schema == AnswerSchema.NOT_FOUND_EXPLICIT:
         if not _validate_not_found_explicit_response(normalized):
             errors.append("not_found_explicit_not_canonical")
+            
+    elif schema == AnswerSchema.SUMMARY_OVERVIEW:
+        if not _validate_summary_overview_response(normalized):
+            errors.append("summary_overview_invalid")
 
     # Unknown schema: treat as pass-through but still normalize.
 
@@ -1210,6 +1279,185 @@ def validate_content_invariants(response: str, schema: AnswerSchema) -> Invarian
 
     ok = len(errors) == 0
     return InvariantResult(ok=ok, errors=errors)
+
+
+def _is_generic_or_low_overlap(answer: str, evidence_text: str) -> tuple[bool, str]:
+    """
+    Check if answer is generic or has low grounding overlap.
+    Returns (is_generic, reason).
+    """
+    import re
+    answer = answer.lower()
+    evidence_text = evidence_text.lower()
+    
+    # 1. Generic phrases
+    generic_phrases = ["typically involves", "generally", "designed to", "often starts with", "usually", "as an ai language model", "i cannot", "i don't have access"]
+    for p in generic_phrases:
+        if p in answer:
+            return True, f"generic_phrase_detected: '{p}'"
+        
+    # 2. Overlap check
+    # Simple tokenization: words > 3 chars
+    def tokenize(text):
+        return set(w for w in re.findall(r"\w+", text) if len(w) > 3)
+        
+    ans_tokens = tokenize(answer)
+    if not ans_tokens:
+        return False, "" # Empty answer, let schema validation handle it
+        
+    ev_tokens = tokenize(evidence_text)
+    
+    overlap = len(ans_tokens.intersection(ev_tokens))
+    ratio = overlap / len(ans_tokens)
+    
+    # Threshold: if less than 30% of answer words (len>3) are in evidence, it's suspicious
+    if ratio < 0.3:
+        return True, f"low_evidence_overlap: {ratio:.2f}"
+        
+    return False, ""
+
+
+def _detect_numeric_conflict(question: str, evidence_items: List[Any]) -> Optional[dict]:
+    """
+    Detects if there are conflicting numeric values for vacation days
+    across different source files.
+    """
+    import re
+    
+    # 1. Check intent (strict heuristic)
+    q_lower = question.lower()
+    if "vacation" not in q_lower:
+        return None
+    if not any(k in q_lower for k in ["days", "per year", "per calendar year"]):
+        return None
+        
+    # 2. Extract numbers from evidence
+    # Regex for "receive X vacation days" or "X vacation days per..."
+    patterns = [
+        re.compile(r"receive\s+(\d{1,2})\s+vacation\s+days", re.IGNORECASE),
+        re.compile(r"(\d{1,2})\s+vacation\s+days\s+per", re.IGNORECASE)
+    ]
+    
+    conflict_values = [] 
+    seen_values = set()
+    val_to_sources = {} 
+    
+    for item in evidence_items:
+        snippet = getattr(item, "snippet", "") or getattr(item, "doc", "")
+        
+        chunk_id = getattr(item, "chunk_id", "")
+        
+        # Extract filename from chunk_id or metadata
+        meta = getattr(item, "meta", {})
+        source_file = meta.get("source_file") or meta.get("filename")
+        if not source_file and chunk_id:
+             parts = chunk_id.rsplit("_", 1)
+             if len(parts) >= 2:
+                 source_file = parts[0]
+        
+        if not source_file:
+            continue
+
+        found_in_chunk = set()
+        for pat in patterns:
+            matches = pat.findall(snippet)
+            for m in matches:
+                try:
+                    val = int(m)
+                    if 1 <= val <= 60:
+                        found_in_chunk.add(val)
+                except ValueError:
+                    pass
+        
+        for val in found_in_chunk:
+            conflict_values.append({
+                "value": val,
+                "source": source_file,
+                "chunk_id": chunk_id
+            })
+            seen_values.add(val)
+            if val not in val_to_sources:
+                val_to_sources[val] = set()
+            val_to_sources[val].add(source_file)
+            
+    # 3. Analyze conflicts
+    if len(seen_values) < 2:
+        return None
+        
+    # Check if different values come from different files
+    # If all values come from the same file, it might be a range or correction, not a conflict
+    # But here we assume different values = conflict if they are distinct integers
+    
+    # Construct clarification payload
+    sorted_values = sorted(list(seen_values))
+    
+    # Identify policy years if possible (heuristic)
+    options = []
+    for val in sorted_values:
+        sources = list(val_to_sources[val])
+        # Try to extract year from filename
+        years = []
+        for s in sources:
+            ym = re.search(r"20\d{2}", s)
+            if ym:
+                years.append(ym.group(0))
+        
+        label = f"{val} days"
+        if years:
+            # If multiple years, pick the first one or join them
+            # Ideally we want "2025" or "2026"
+            unique_years = sorted(list(set(years)))
+            label = "/".join(unique_years)
+        else:
+            # Fallback to filename if no year
+            if len(sources) == 1:
+                label = sources[0]
+        
+        options.append(label)
+        
+    return {
+        "pipeline_marker": "CLARIFICATION_REQUIRED",
+        "needs_clarification": True,
+        "conflict_detected": True,
+        "conflict_field": "vacation_days",
+        "conflict_values": sorted_values,
+        "conflict_sources": list(set(s for vals in val_to_sources.values() for s in vals)),
+        "clarification": {
+            "type": "TIMEFRAME",
+            "question": "Which policy year are you referring to?",
+            "options": options
+        }
+    }
+        
+    # Also check if the values are actually different across files.
+    all_vals = set()
+    for v_set in source_files_map.values():
+        all_vals.update(v_set)
+        
+    if len(all_vals) < 2:
+        return None
+
+    # 4. Extract candidate year options
+    years = set()
+    year_pattern = re.compile(r"(202[0-9])")
+    for fname in source_files_map.keys():
+        ym = year_pattern.search(fname)
+        if ym:
+            years.add(ym.group(1))
+            
+    options = sorted(list(years))
+
+    return {
+        "pipeline_marker": "CLARIFICATION_REQUIRED",
+        "clarification": {
+            "type": "TIMEFRAME",
+            "question": f"Which policy year should I use: {' or '.join(options)}?" if len(options) > 1 else "Which policy year should I use?",
+            "options": options
+        },
+        "conflict_detected": True,
+        "conflict_kind": "VACATION_DAYS_YEAR",
+        "conflict_values": conflict_values
+    }
 
 
 def _construct_schema_correct_answer_from_evidence(
@@ -1261,6 +1509,78 @@ def _construct_schema_correct_answer_from_evidence(
                 continue
             items.append(f"{idx}. {base}")
         return "\n".join(items) if items else None
+        
+    if schema == AnswerSchema.SUMMARY_OVERVIEW:
+        if not evidence_items:
+            return None
+            
+        # 1. Prefer chunks from the same doc as the top hit
+        top_doc_id = getattr(evidence_items[0], "doc_id", None)
+        
+        # Sort/filter evidence: same doc first, then others
+        same_doc_ev = [ev for ev in evidence_items if getattr(ev, "doc_id", None) == top_doc_id]
+        other_doc_ev = [ev for ev in evidence_items if getattr(ev, "doc_id", None) != top_doc_id]
+        sorted_evidence = same_doc_ev + other_doc_ev
+        
+        bullets: List[str] = []
+        seen_points = set()
+        import re
+        
+        for ev in sorted_evidence:
+            if len(bullets) >= 8:
+                break
+                
+            snippet = getattr(ev, "snippet", "") or ""
+            
+            # Extract potential points from snippet
+            lines = snippet.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line or refusal_phrase in line:
+                    continue
+                    
+                candidate = None
+                
+                # Case 1: Bullet point
+                if line.startswith(('-', '*', '•')):
+                    candidate = line.lstrip("-*• ").strip()
+                    
+                # Case 2: Numbered list
+                elif re.match(r"^\d+\.\s+", line):
+                    candidate = re.sub(r"^\d+\.\s+", "", line).strip()
+                    
+                # Case 3: ALL CAPS heading or "Heading:" pattern
+                elif (line.isupper() and len(line) < 60) or (line.endswith(':') and len(line) < 60):
+                    candidate = line.strip(":")
+                    
+                # Case 4: If we are desperate (few bullets), take the first sentence
+                elif len(bullets) < 2 and len(line) > 20 and line[0].isupper():
+                     candidate = line
+                
+                if candidate and candidate not in seen_points:
+                    # Strip timestamps if needed (simple heuristic)
+                    # e.g. "9:00 AM - Arrival" -> "Arrival"
+                    candidate = re.sub(r"^\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?\s*[-–]\s*", "", candidate)
+                    
+                    bullets.append(f"- {candidate}")
+                    seen_points.add(candidate)
+                    if len(bullets) >= 8: break
+            
+            # If we didn't get anything from the snippet lines, try the heading/first line
+            if len(bullets) < 8:
+                heading = getattr(ev, "heading", "")
+                first = _first_line(snippet)
+                
+                # Use heading if available and not seen
+                if heading and heading not in seen_points and refusal_phrase not in heading:
+                     bullets.append(f"- {heading}")
+                     seen_points.add(heading)
+                # Else use first line
+                elif first and first not in seen_points and refusal_phrase not in first:
+                     bullets.append(f"- {first}")
+                     seen_points.add(first)
+
+        return "\n".join(bullets) if bullets else None
 
     # For BOOLEAN_SPECIFIED or unknown schemas, prefer explicit validation failure
     return None
@@ -1309,6 +1629,14 @@ def repair_answer_by_schema(
             return answer_text
         return _construct_schema_correct_answer_from_evidence(
             AnswerSchema.CHECKLIST_PROCEDURE, evidence_items
+        )
+        
+    # SUMMARY_OVERVIEW: fall back to evidence-based constructor
+    if schema == AnswerSchema.SUMMARY_OVERVIEW:
+        if _validate_summary_overview_response(answer_text):
+            return answer_text
+        return _construct_schema_correct_answer_from_evidence(
+            AnswerSchema.SUMMARY_OVERVIEW, evidence_items
         )
 
     # BOOLEAN_SPECIFIED: coerce into the canonical
@@ -1362,6 +1690,10 @@ async def query_collection(
         # Check for CHECKLIST_PROCEDURE (highest priority)
         if any(phrase in q_lower for phrase in ["what do i do", "steps", "how do i"]):
             return AnswerSchema.CHECKLIST_PROCEDURE
+        
+        # Check for SUMMARY_OVERVIEW
+        if any(word in q_lower for word in ["overview", "process", "summarize", "summary"]) or "what is the onboarding process" in q_lower:
+            return AnswerSchema.SUMMARY_OVERVIEW
         
         # Check for POLICY_EXCERPT
         if any(word in q_lower for word in ["policy", "allowed", "required"]):
@@ -1448,8 +1780,16 @@ async def query_collection(
         contains_clock_time = bool(re.search(time_regex, h.doc, re.IGNORECASE))
         has_arrival_kw = any(kw in doc_lower for kw in time_arrival_keywords) or any(kw in header_lower for kw in time_arrival_keywords)
         h.lexical_score = _lexical_overlap_score(question, h.doc)
+
+        # --- Chunk Quality Penalty ---
+        quality_penalty, quality_reasons = _score_chunk_quality(h.doc)
+
         intent_boost = 0.0
         intent_tags = []
+
+        if quality_penalty != 0:
+            intent_boost += quality_penalty
+            intent_tags.extend(quality_reasons)
         if is_time_arrival_intent:
             if contains_clock_time and has_arrival_kw:
                 intent_boost += 3.0
@@ -1477,6 +1817,32 @@ async def query_collection(
         h.why_selected = intent_tags + (["lexical_overlap"] if h.lexical_score > 0 else [])
     # Sort by final_score DESC, dist ASC, chunk_id ASC
     hits.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
+
+    # --- Conflict Detection (FACT_SINGLE) - Early Check ---
+    if answer_schema == AnswerSchema.FACT_SINGLE:
+        # Check top 20 hits for conflicts
+        conflict_candidates = hits[:20]
+        conflict_info = _detect_numeric_conflict(question, conflict_candidates)
+        if conflict_info:
+            logger.info(f"[RAG] Numeric conflict detected for FACT_SINGLE (early). conflict={conflict_info}")
+            
+            # Build debug_info
+            debug_info = {
+                "request_id": request_id,
+                "evidence_count": 0,
+                "sources_count": 0,
+                "refused": False,
+                "retrieved_count": len(hits),
+                "hits_count": len(hits),
+            }
+            debug_info.update(conflict_info)
+            
+            # Return answer_gen that yields ONLY the clarification question once
+            async def clarification_gen():
+                yield conflict_info["clarification"]["question"]
+            
+            # Ensure sources/evidence returned are empty lists for clarification
+            return clarification_gen(), [], [], "", debug_info
 
     # --- retrieved_chunks_top20: after normalization, before rerank/dedupe ---
     retrieved_chunks_top20 = None
@@ -1647,14 +2013,8 @@ async def query_collection(
 
     # --- PRIMARY EVIDENCE grounding ---
     primary_hit = selected[0] if selected else None
-    if primary_hit:
-        selected_chunk_id = primary_hit.chunk_id
-        selected_doc_len = len(primary_hit.doc)
-        contains_password = "ragify-1234" in primary_hit.doc.lower()
-        contains_guest_ssid = "ragify-guest" in primary_hit.doc.lower()
-        first_300_chars = primary_hit.doc[:300]
-        last_300_chars = primary_hit.doc[-300:] if len(primary_hit.doc) > 300 else primary_hit.doc
-        logging.info("PRIMARY_HIT request_id=%s selected_chunk_id=%s selected_doc_len=%d contains_password=%s contains_guest_ssid=%s first_300_chars=%r last_300_chars=%r", request_id, selected_chunk_id, selected_doc_len, contains_password, contains_guest_ssid, first_300_chars, last_300_chars)
+    # Logging moved to just before LLM call to ensure consistency with final selection
+    
     context_chunks = []
     if selected:
         # For multi-chunk context, include all selected chunks as evidence
@@ -1765,6 +2125,22 @@ RULES (must follow):
   "No — the document does not specify this."
 
 - Do not include citations in the answer text. Citations are handled separately.
+
+EVIDENCE is a set of chunks with CHUNK_ID and text."""
+        elif answer_schema == AnswerSchema.SUMMARY_OVERVIEW:
+            instruction_str = """You are a retrieval-grounded assistant.
+
+RULES (must follow):
+- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
+- Produce a summary of 4-8 bullet points.
+- Each bullet must be grounded in evidence.
+- Do NOT use generic filler language like "typically", "generally", "often", "designed to".
+- Do not include citations in the answer text. Citations are handled separately.
+
+OUTPUT FORMAT:
+- <summary point>
+- <summary point>
+...
 
 EVIDENCE is a set of chunks with CHUNK_ID and text."""
         elif answer_schema == AnswerSchema.NOT_FOUND_EXPLICIT:
@@ -2422,6 +2798,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         from app.schemas.query import EvidenceItem
         evidence_items = []
         source_files = []
+        context_chunks = []
         for h in selected:
             header = _extract_header_first_line(question, h.doc)
             
@@ -2445,10 +2822,50 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
             if src:
                 source_files.append(src)
+            
+            context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
 
         # dedupe sources preserving order
         seen_src = set()
         source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
+        
+        context_text = "\n\n".join(context_chunks)
+
+    # --- Context Sufficiency Gate ---
+    if is_broad:
+        selected_docs = [h.doc for h in selected]
+        total_chars = sum(len(d) for d in selected_docs)
+        contentful_chunks_count = sum(1 for d in selected_docs if len(d.strip()) > 50)
+        
+        if total_chars < 500 or contentful_chunks_count < 2:
+            logger.info(f"[RAG] Context sufficiency gate failed for broad question. chars={total_chars}, contentful={contentful_chunks_count}")
+            async def sufficiency_refusal_gen():
+                yield "The document does not specify this."
+            
+            debug_info = {
+                "retrieved": len(hits),
+                "selected": [{"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected],
+                "refused": True,
+                "refusal_reason": "INSUFFICIENT_CONTEXT",
+                "pipeline_marker": "FORCED_REFUSAL_INSUFFICIENT_CONTEXT",
+                "context_stats": {
+                    "total_chars": total_chars,
+                    "contentful_chunks_count": contentful_chunks_count
+                },
+                "request_id": request_id,
+            }
+            return sufficiency_refusal_gen(), source_files, evidence_items, context_text, debug_info
+
+    # --- Log PRIMARY_HIT (final selection) ---
+    primary_hit_final = selected[0] if selected else None
+    if primary_hit_final:
+        selected_chunk_id = primary_hit_final.chunk_id
+        selected_doc_len = len(primary_hit_final.doc)
+        contains_password = "ragify-1234" in primary_hit_final.doc.lower()
+        contains_guest_ssid = "ragify-guest" in primary_hit_final.doc.lower()
+        first_300_chars = primary_hit_final.doc[:300]
+        last_300_chars = primary_hit_final.doc[-300:] if len(primary_hit_final.doc) > 300 else primary_hit_final.doc
+        logging.info("PRIMARY_HIT request_id=%s selected_chunk_id=%s selected_doc_len=%d contains_password=%s contains_guest_ssid=%s first_300_chars=%r last_300_chars=%r", request_id, selected_chunk_id, selected_doc_len, contains_password, contains_guest_ssid, first_300_chars, last_300_chars)
 
     # Call the chat model with the prompt template (instruction/history as strings handled by render_prompt_template)
     logger.info("[%s] Calling LLM with context length: %d chars, first 300: %s, last 300: %s", 
@@ -2465,6 +2882,16 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
 
     debug_info = None
     if debug >= 1:
+        # Assertion: Check consistency between selected[0] and context_text
+        if selected and context_text:
+            first_sel_id = selected[0].chunk_id
+            match = re.search(r"\[CHUNK_ID=(.*?) HEADING=", context_text)
+            if match:
+                first_ctx_id = match.group(1).strip()
+                if first_sel_id != first_ctx_id:
+                    logger.error(f"[RAG] Consistency Error: selected[0].chunk_id={first_sel_id} != context_text first chunk={first_ctx_id}")
+                    raise AssertionError(f"Consistency Error: selected[0] ({first_sel_id}) != context ({first_ctx_id})")
+
         selected_chunks_debug = []
         for h in selected:
             chunk_id = h.chunk_id
@@ -2588,6 +3015,16 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         if isinstance(debug_info, dict) and not inv.ok:
             debug_info["content_invariant_errors"] = inv.errors
 
+        # 4) Generic/Hallucination Check (only if invariants passed)
+        is_generic_failure = False
+        if not invariant_violated and answer_schema not in [AnswerSchema.NOT_FOUND_EXPLICIT]:
+             combined_evidence_text = "\n".join([item.snippet for item in evidence_items]) if evidence_items else ""
+             if _is_generic_or_low_overlap(answer_text_normalized, combined_evidence_text):
+                 is_generic_failure = True
+                 if isinstance(debug_info, dict):
+                     debug_info["generic_answer_detected"] = True
+                     debug_info["generic_answer_reason"] = "Low overlap or generic phrases detected"
+
         final_answer_text: Optional[str] = None
 
         # 3a) Invariant correction path: do NOT retry automatically when
@@ -2626,13 +3063,15 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                 # No answer will be streamed; caller inspects debug/decision.
                 return
 
-        # 3b) Pure schema validation failures (no invariant violation):
-        #     try a local schema-aware repair using evidence. Only if this
-        #     fails do we fall back to a strict LLM retry.
-        if not invariant_violated and not is_valid:
-            repaired = repair_answer_by_schema(
-                answer_text_normalized, answer_schema, evidence_items
-            )
+        # 3b) Pure schema validation failures OR Generic content failures
+        if not invariant_violated and (not is_valid or is_generic_failure):
+            repaired = None
+            # Only attempt schema repair if it was a schema failure, not a generic content failure
+            if not is_valid and not is_generic_failure:
+                repaired = repair_answer_by_schema(
+                    answer_text_normalized, answer_schema, evidence_items
+                )
+            
             if repaired:
                 final_answer_text = repaired
                 if isinstance(debug_info, dict):
@@ -2640,15 +3079,19 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                     debug_info["schema_repair_source"] = "evidence"
                     debug_info["final_answer_text_override"] = repaired
             else:
-                retry_reason = "schema validation failure"
+                retry_reason = "generic content failure" if is_generic_failure else "schema validation failure"
                 logger.warning(
                     f"[RAG] {retry_reason.capitalize()} for {answer_schema.value}, attempting retry. request_id={request_id}"
                 )
 
+                instruction_prefix = "CRITICAL VALIDATION FAILURE"
+                if is_generic_failure:
+                    instruction_prefix += " - Your answer was too generic or ignored the provided evidence."
+
                 retry_instruction = (
-                    "CRITICAL VALIDATION FAILURE - You must follow the exact format below:\n\n"
+                    f"{instruction_prefix} - You must follow the exact format below:\n\n"
                     f"{_llm_prompt_template(instruction='', history='', context=context_text, question=question, answer_schema=answer_schema).split('EVIDENCE:')[0].strip()}\n\n"
-                    "Your previous response was invalid. Respond again following the exact format requirements."
+                    "Your previous response was invalid. Respond again following the exact format requirements and ensure your answer is grounded in the evidence."
                 )
 
                 # Retry with strict prompt (non-streaming)
