@@ -22,10 +22,12 @@ def test_detect_numeric_conflict_found():
     conflict = _detect_numeric_conflict(question, [ev1, ev2])
     
     assert conflict is not None
-    assert conflict["question"] == "Which policy year should I use?"
-    assert conflict["type"] == "TIMEFRAME"
-    assert "2025" in conflict["options"]
-    assert "2026" in conflict["options"]
+    assert conflict["pipeline_marker"] == "CLARIFICATION_REQUIRED"
+    assert conflict["needs_clarification"] is True
+    assert conflict["clarification"]["question"] == "Which policy year are you referring to?"
+    assert conflict["clarification"]["type"] == "TIMEFRAME"
+    assert "2025" in conflict["clarification"]["options"]
+    assert "2026" in conflict["clarification"]["options"]
 
 def test_detect_numeric_conflict_no_conflict():
     # Setup evidence with same values
@@ -70,7 +72,7 @@ def test_detect_numeric_conflict_single_source():
         doc_id=1
     )
     ev2 = EvidenceItem(
-        snippet="Also 20 days for seniors.",
+        snippet="Employees get 20 vacation days per year.",
         chunk_id="03_Benefits_Policy_2025.txt_1",
         heading="Vacation",
         doc_id=1
