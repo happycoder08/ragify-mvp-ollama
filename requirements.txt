@@ -13,4 +13,5 @@ PyJWT
 bcrypt
 
 pytest-asyncio
+asgi_lifespan
 scikit-learn
