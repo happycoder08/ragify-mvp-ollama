@@ -113,6 +113,7 @@ from app.services.rag_service import (
     is_mock_mode,
     reset_collection,
     _construct_schema_correct_answer_from_evidence,
+    _select_fact_single_fallback,
 )
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.runtime import build_runtime_from_env
@@ -196,6 +197,7 @@ def _apply_empty_answer_invariant(
     is_refused: bool,
     pipeline_marker: str,
     decision: Optional[AnswerDecision],
+    question: str,
     evidence: List[EvidenceItem],
     sources: List[str],
     debug_info: Optional[DebugInfo],
@@ -210,10 +212,13 @@ def _apply_empty_answer_invariant(
     if debug_enabled and debug_info is not None:
         debug_info.empty_answer_invariant_tripped = True
 
-    fallback_marker = "VALIDATION_FAILED_FALLBACK"
+    fallback_marker = "EXTRACTOR_FACT_SINGLE"
     answer_schema = getattr(decision, "answer_schema", None)
     if answer_schema == AnswerSchema.FACT_SINGLE and evidence:
-        fallback_answer = _construct_schema_correct_answer_from_evidence(
+        fallback_answer = _select_fact_single_fallback(
+            question,
+            evidence,
+        ) or _construct_schema_correct_answer_from_evidence(
             AnswerSchema.FACT_SINGLE,
             evidence,
         )
@@ -223,7 +228,10 @@ def _apply_empty_answer_invariant(
             return fallback_answer, False, None, evidence, sources, fallback_marker
 
     refusal_answer = "The document does not specify this."
-    return refusal_answer, True, "VALIDATION_FAILED", [], [], fallback_marker
+    if debug_enabled and debug_info is not None:
+        debug_info.refused = True
+        debug_info.refusal_reason = "VALIDATION_FAILED"
+    return refusal_answer, True, "VALIDATION_FAILED", [], [], "FORCED_REFUSAL"
 
 
 @app.on_event("startup")
@@ -1279,6 +1287,7 @@ async def query(
             is_refused=is_refused,
             pipeline_marker=pipeline_marker,
             decision=decision,
+            question=payload.question,
             evidence=evidence,
             sources=sources,
             debug_info=debug_info if payload.debug >= 1 else None,
@@ -1394,6 +1403,7 @@ async def query(
             is_refused=is_refused,
             pipeline_marker=pipeline_marker,
             decision=decision,
+            question=payload.question,
             evidence=evidence,
             sources=sources,
             debug_info=debug_info if payload.debug >= 1 else None,

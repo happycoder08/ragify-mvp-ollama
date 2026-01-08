@@ -40,8 +40,8 @@ async def test_empty_answer_fallback_from_evidence(asgi_client, monkeypatch):
 
     assert payload["refused"] is False
     assert payload["answer"].strip() != ""
-    assert payload["answer"].startswith("Employees should arrive at 9:00 AM.")
-    assert payload["pipeline_marker"] == "VALIDATION_FAILED_FALLBACK"
+    assert "9:00 AM" in payload["answer"]
+    assert payload["pipeline_marker"].startswith("EXTRACTOR_")
     assert payload["debug_info"]["empty_answer_invariant_tripped"] is True
     assert payload["debug_info"]["fallback_from_evidence"] is True
     assert payload["evidence"]
