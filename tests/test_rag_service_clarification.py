@@ -48,3 +48,40 @@ async def test_query_collection_clarification():
         assert len(evidence) == 0
         assert mock_llm.call_count == 0
         assert "Which policy year" in ans
+
+
+@pytest.mark.asyncio
+async def test_fact_single_conflict_short_circuits_llm():
+    with patch("app.services.rag_service.embed_texts", new_callable=AsyncMock) as mock_embed, \
+         patch("app.services.rag_service.get_collection_async", new_callable=AsyncMock) as mock_get_collection, \
+         patch("app.services.rag_service._call_chat_model", new_callable=AsyncMock) as mock_llm:
+        mock_embed.return_value = [[0.1] * 768]
+
+        mock_collection = MagicMock()
+        mock_collection.metadata = {"embed_dim": 768}
+        mock_get_collection.return_value = mock_collection
+
+        mock_collection.query.return_value = {
+            "ids": [["id1", "id2"]],
+            "documents": [[
+                "Full-time employees receive 15 vacation days per calendar year.",
+                "Full-time employees receive 20 vacation days per calendar year.",
+            ]],
+            "metadatas": [[
+                {"source_file": "Benefits_Policy_2025.txt", "header": "2025 Policy"},
+                {"source_file": "Benefits_Policy_2026.txt", "header": "2026 Policy"},
+            ]],
+            "distances": [[0.1, 0.2]],
+            "embeddings": None,
+        }
+
+        question = "How many vacation days do full-time employees receive per year?"
+        answer_gen, sources, evidence, context, debug_info = await query_collection("default", question)
+
+        assert debug_info["pipeline_marker"] == "CLARIFICATION_REQUIRED"
+        assert debug_info["needs_clarification"] is True
+        assert set(debug_info["clarification"]["options"]) >= {"2025", "2026"}
+        assert sources == []
+        assert evidence == []
+        assert context == ""
+        assert mock_llm.call_count == 0

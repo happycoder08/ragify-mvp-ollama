@@ -1328,28 +1328,20 @@ def _detect_numeric_conflict(question: str, evidence_items: List[Any]) -> Option
     q_lower = question.lower()
     if "vacation" not in q_lower:
         return None
-    if not any(k in q_lower for k in ["days", "per year", "per calendar year"]):
-        return None
         
     # 2. Extract numbers from evidence
-    # Regex for "receive X vacation days" or "X vacation days per..."
-    patterns = [
-        re.compile(r"receive\s+(\d{1,2})\s+vacation\s+days", re.IGNORECASE),
-        re.compile(r"(\d{1,2})\s+vacation\s+days\s+per", re.IGNORECASE)
-    ]
-    
-    conflict_values = [] 
-    seen_values = set()
-    val_to_sources = {} 
+    pattern = re.compile(r"(\d+)\s+vacation\s+days", re.IGNORECASE)
+    val_to_sources: dict[int, set[str]] = {}
     
     for item in evidence_items:
-        snippet = getattr(item, "snippet", "") or getattr(item, "doc", "")
-        
+        snippet = getattr(item, "doc", "") or getattr(item, "snippet", "")
+        if "vacation" not in snippet.lower():
+            continue
         chunk_id = getattr(item, "chunk_id", "")
         
         # Extract filename from chunk_id or metadata
-        meta = getattr(item, "meta", {})
-        source_file = meta.get("source_file") or meta.get("filename")
+        meta = getattr(item, "meta", {}) or {}
+        source_file = meta.get("source_file") or meta.get("filename") or meta.get("file_name") or meta.get("path")
         if not source_file and chunk_id:
              parts = chunk_id.rsplit("_", 1)
              if len(parts) >= 2:
@@ -1358,105 +1350,47 @@ def _detect_numeric_conflict(question: str, evidence_items: List[Any]) -> Option
         if not source_file:
             continue
 
-        found_in_chunk = set()
-        for pat in patterns:
-            matches = pat.findall(snippet)
-            for m in matches:
-                try:
-                    val = int(m)
-                    if 1 <= val <= 60:
-                        found_in_chunk.add(val)
-                except ValueError:
-                    pass
-        
-        for val in found_in_chunk:
-            conflict_values.append({
-                "value": val,
-                "source": source_file,
-                "chunk_id": chunk_id
-            })
-            seen_values.add(val)
-            if val not in val_to_sources:
-                val_to_sources[val] = set()
-            val_to_sources[val].add(source_file)
+        matches = pattern.findall(snippet)
+        for match in matches:
+            try:
+                val = int(match)
+            except ValueError:
+                continue
+            if 1 <= val <= 60:
+                if val not in val_to_sources:
+                    val_to_sources[val] = set()
+                val_to_sources[val].add(source_file)
             
     # 3. Analyze conflicts
-    if len(seen_values) < 2:
+    if len(val_to_sources) < 2:
+        return None
+
+    conflict_sources = sorted({s for sources in val_to_sources.values() for s in sources})
+    if len(conflict_sources) < 2:
         return None
         
-    # Check if different values come from different files
-    # If all values come from the same file, it might be a range or correction, not a conflict
-    # But here we assume different values = conflict if they are distinct integers
-    
     # Construct clarification payload
-    sorted_values = sorted(list(seen_values))
-    
-    # Identify policy years if possible (heuristic)
-    options = []
-    for val in sorted_values:
-        sources = list(val_to_sources[val])
-        # Try to extract year from filename
-        years = []
-        for s in sources:
-            ym = re.search(r"20\d{2}", s)
-            if ym:
-                years.append(ym.group(0))
-        
-        label = f"{val} days"
-        if years:
-            # If multiple years, pick the first one or join them
-            # Ideally we want "2025" or "2026"
-            unique_years = sorted(list(set(years)))
-            label = "/".join(unique_years)
-        else:
-            # Fallback to filename if no year
-            if len(sources) == 1:
-                label = sources[0]
-        
-        options.append(label)
+    conflict_values = sorted(val_to_sources.keys())
+    year_pattern = re.compile(r"(20\d{2})")
+    years = []
+    for source in conflict_sources:
+        match = year_pattern.search(source)
+        if match:
+            years.append(match.group(1))
+    options = sorted(set(years)) if years else [str(v) for v in conflict_values]
         
     return {
         "pipeline_marker": "CLARIFICATION_REQUIRED",
         "needs_clarification": True,
         "conflict_detected": True,
         "conflict_field": "vacation_days",
-        "conflict_values": sorted_values,
-        "conflict_sources": list(set(s for vals in val_to_sources.values() for s in vals)),
+        "conflict_values": conflict_values,
+        "conflict_sources": conflict_sources,
         "clarification": {
             "type": "TIMEFRAME",
             "question": "Which policy year are you referring to?",
             "options": options
         }
-    }
-        
-    # Also check if the values are actually different across files.
-    all_vals = set()
-    for v_set in source_files_map.values():
-        all_vals.update(v_set)
-        
-    if len(all_vals) < 2:
-        return None
-
-    # 4. Extract candidate year options
-    years = set()
-    year_pattern = re.compile(r"(202[0-9])")
-    for fname in source_files_map.keys():
-        ym = year_pattern.search(fname)
-        if ym:
-            years.add(ym.group(1))
-            
-    options = sorted(list(years))
-
-    return {
-        "pipeline_marker": "CLARIFICATION_REQUIRED",
-        "clarification": {
-            "type": "TIMEFRAME",
-            "question": f"Which policy year should I use: {' or '.join(options)}?" if len(options) > 1 else "Which policy year should I use?",
-            "options": options
-        },
-        "conflict_detected": True,
-        "conflict_kind": "VACATION_DAYS_YEAR",
-        "conflict_values": conflict_values
     }
 
 
@@ -1834,6 +1768,7 @@ async def query_collection(
                 "refused": False,
                 "retrieved_count": len(hits),
                 "hits_count": len(hits),
+                "answer_schema": answer_schema,
             }
             debug_info.update(conflict_info)
             
@@ -2015,17 +1950,14 @@ async def query_collection(
     primary_hit = selected[0] if selected else None
     # Logging moved to just before LLM call to ensure consistency with final selection
     
+    selected_chunk_ids = [h.chunk_id for h in selected] if selected else []
+    selected_chunk_headers: dict[str, str] = {}
     context_chunks = []
     if selected:
         # For multi-chunk context, include all selected chunks as evidence
         for i, h in enumerate(selected):
-            # Extract header
-            header = None
-            for line in h.doc.splitlines():
-                if line.strip():
-                    header = line.strip()
-                    break
-            header = header or h.doc[:80].replace('\n', ' ')
+            header = _extract_header_first_line(question, h.doc)
+            selected_chunk_headers[h.chunk_id] = header
             context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
     context_text = "\n\n".join(context_chunks)
 
@@ -2799,8 +2731,10 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         evidence_items = []
         source_files = []
         context_chunks = []
+        selected_chunk_headers = {}
         for h in selected:
             header = _extract_header_first_line(question, h.doc)
+            selected_chunk_headers[h.chunk_id] = header
             
             # Compute anchor_type for evidence
             doc_lower = h.doc.lower()
@@ -2830,6 +2764,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
         
         context_text = "\n\n".join(context_chunks)
+        selected_chunk_ids = [h.chunk_id for h in selected]
 
     # --- Context Sufficiency Gate ---
     if is_broad:
@@ -2882,9 +2817,9 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
 
     debug_info = None
     if debug >= 1:
-        # Assertion: Check consistency between selected[0] and context_text
-        if selected and context_text:
-            first_sel_id = selected[0].chunk_id
+        # Assertion: Check consistency between selected_chunk_ids and context_text
+        if selected_chunk_ids and context_text:
+            first_sel_id = selected_chunk_ids[0]
             match = re.search(r"\[CHUNK_ID=(.*?) HEADING=", context_text)
             if match:
                 first_ctx_id = match.group(1).strip()
@@ -2897,7 +2832,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             chunk_id = h.chunk_id
             dist = h.dist
             source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-            header_first_line = str(h.meta.get("header") or h.meta.get("section") or _extract_header_first_line(question, h.doc)).strip()
+            header_first_line = selected_chunk_headers.get(chunk_id) or _extract_header_first_line(question, h.doc)
             contains_clock_time = bool(re.search(r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b", h.doc.lower(), re.IGNORECASE))
             lexical_score = _lexical_overlap_score(question, h.doc)
             # final_score and why_selected (use debug_chunks if available)
@@ -2931,8 +2866,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             "total_retrieved": len(hits),
             "k_final": k_final,
             "is_broad": is_broad,
-            "selected_chunk_ids": [h.chunk_id for h in selected],
-            "selected_headings": [h.meta.get("header") or h.meta.get("section") or _extract_header_first_line(question, h.doc) for h in selected],
+            "selected_chunk_ids": selected_chunk_ids,
+            "selected_headings": [selected_chunk_headers.get(h.chunk_id) or _extract_header_first_line(question, h.doc) for h in selected],
             "mmr_lambda": 0.6,
             "selected_by": "mmr",
             "coverage_ok": coverage_ok,
@@ -2963,8 +2898,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             "total_retrieved": len(hits),
             "k_final": k_final,
             "is_broad": is_broad,
-            "selected_chunk_ids": [h.chunk_id for h in selected],
-            "selected_headings": [h.meta.get("header") or h.meta.get("section") or _extract_header_first_line(question, h.doc) for h in selected],
+            "selected_chunk_ids": selected_chunk_ids,
+            "selected_headings": [selected_chunk_headers.get(h.chunk_id) or _extract_header_first_line(question, h.doc) for h in selected],
             "mmr_lambda": 0.6,
             "selected_by": "mmr",
             "coverage_ok": coverage_ok,
@@ -4000,4 +3935,3 @@ async def answer_question(
     decision = AnswerDecision(**decision_kwargs)
 
     return answer_gen, sources, evidence, context_text, debug_payload, decision
-
