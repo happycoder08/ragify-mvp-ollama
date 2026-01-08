@@ -166,6 +166,14 @@ class DebugInfo(BaseModel):
         description="Set if refused=False but answer equals the canonical refusal phrase",
     )
     answer_schema: Optional[AnswerSchema] = Field(default=None, description="Answer schema classification")
+    empty_answer_invariant_tripped: Optional[bool] = Field(
+        default=None,
+        description="Set if non-clarification response had an empty answer and required a fallback",
+    )
+    fallback_from_evidence: Optional[bool] = Field(
+        default=None,
+        description="Set if an empty-answer fallback was constructed from evidence",
+    )
 
 
 class QueryFinalResponse(BaseModel):

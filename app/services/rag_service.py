@@ -1426,6 +1426,7 @@ def _construct_schema_correct_answer_from_evidence(
         # text; evidence carries the citation metadata separately.
         return base
 
+
     if schema == AnswerSchema.POLICY_EXCERPT:
         bullets: List[str] = []
         for ev in evidence_items[:3]:
@@ -1518,6 +1519,33 @@ def _construct_schema_correct_answer_from_evidence(
 
     # For BOOLEAN_SPECIFIED or unknown schemas, prefer explicit validation failure
     return None
+
+
+def _select_fact_single_fallback(question: str, evidence_items: List[Any]) -> Optional[str]:
+    """Pick the best matching sentence/line from evidence for FACT_SINGLE."""
+    if not evidence_items:
+        return None
+
+    refusal_phrase = "The document does not specify this."
+    best_line = ""
+    best_score = -1.0
+
+    for ev in evidence_items:
+        snippet = getattr(ev, "snippet", "") or ""
+        for raw_line in snippet.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            for candidate in re.split(r"(?<=[.!?])\s+", line):
+                candidate = candidate.strip()
+                if not candidate or refusal_phrase in candidate:
+                    continue
+                score = _lexical_overlap_score(question, candidate)
+                if score > best_score or (score == best_score and len(candidate) > len(best_line)):
+                    best_score = score
+                    best_line = candidate
+
+    return best_line or None
 
 
 def repair_answer_by_schema(
@@ -2982,21 +3010,34 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                     debug_info["corrected_answer_snippet"] = corrected[:200]
                     debug_info["final_answer_text_override"] = corrected
             else:
-                # Could not construct a schema-correct answer from evidence
-                # -> mark validation failure with refusal and reason and
-                # return a structured failure (no streamed refusal tokens).
-                if isinstance(debug_info, dict):
-                    debug_info["invariant_violation_resolved"] = False
-                    debug_info["invariant_violation_final_action"] = (
-                        "VALIDATION_FAILED_FORCED_REFUSAL"
-                    )
-                    debug_info["validation_failed"] = True
-                    debug_info["validation_schema"] = answer_schema.value
-                    debug_info["validation_attempts"] = 1
-                    debug_info["refused"] = True
-                    debug_info["refusal_reason"] = "INVARIANT_VIOLATION_UNRESOLVED"
-                # No answer will be streamed; caller inspects debug/decision.
-                return
+                fallback_line = None
+                if answer_schema == AnswerSchema.FACT_SINGLE and evidence_items:
+                    fallback_line = _select_fact_single_fallback(question, evidence_items)
+                if fallback_line:
+                    final_answer_text = fallback_line
+                    if isinstance(debug_info, dict):
+                        debug_info["fallback_from_evidence"] = True
+                        debug_info["pipeline_marker"] = "EXTRACTOR_FACT_SINGLE"
+                        debug_info["refused"] = False
+                        debug_info["refusal_reason"] = None
+                        debug_info["final_answer_text_override"] = fallback_line
+                else:
+                    # Could not construct a schema-correct answer from evidence
+                    # -> mark validation failure with refusal and reason and
+                    # return a structured failure (no streamed refusal tokens).
+                    if isinstance(debug_info, dict):
+                        debug_info["invariant_violation_resolved"] = False
+                        debug_info["invariant_violation_final_action"] = (
+                            "VALIDATION_FAILED_FORCED_REFUSAL"
+                        )
+                        debug_info["validation_failed"] = True
+                        debug_info["validation_schema"] = answer_schema.value
+                        debug_info["validation_attempts"] = 1
+                        debug_info["refused"] = True
+                        debug_info["refusal_reason"] = "VALIDATION_FAILED"
+                        debug_info["pipeline_marker"] = "FORCED_REFUSAL"
+                    # No answer will be streamed; caller inspects debug/decision.
+                    return
 
         # 3b) Pure schema validation failures OR Generic content failures
         if not invariant_violated and (not is_valid or is_generic_failure):
@@ -3061,23 +3102,39 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                 if not retry_is_valid or retry_invariant_violated:
                     # Retry also failed: record structured failure and
                     # return without streaming any tokens.
-                    if retry_invariant_violated:
-                        logger.error(
-                            f"[RAG] Invariant violation persisted on retry for {answer_schema.value}, forcing NOT_FOUND_EXPLICIT. request_id={request_id}"
-                        )
+                    fallback_line = None
+                    if answer_schema == AnswerSchema.FACT_SINGLE and evidence_items:
+                        fallback_line = _select_fact_single_fallback(question, evidence_items)
+                    if fallback_line:
+                        final_answer_text = fallback_line
                         if isinstance(debug_info, dict):
-                            debug_info["invariant_violation_forced_refusal"] = True
-                            debug_info["refused"] = True
-                            debug_info["original_schema"] = answer_schema.value
+                            debug_info["fallback_from_evidence"] = True
+                            debug_info["pipeline_marker"] = "EXTRACTOR_FACT_SINGLE"
+                            debug_info["refused"] = False
+                            debug_info["refusal_reason"] = None
+                            debug_info["final_answer_text_override"] = fallback_line
                     else:
-                        logger.error(
-                            f"[RAG] Schema validation failed on retry for {answer_schema.value}, failing cleanly. request_id={request_id}"
-                        )
+                        if retry_invariant_violated:
+                            logger.error(
+                                f"[RAG] Invariant violation persisted on retry for {answer_schema.value}, forcing NOT_FOUND_EXPLICIT. request_id={request_id}"
+                            )
+                            if isinstance(debug_info, dict):
+                                debug_info["invariant_violation_forced_refusal"] = True
+                                debug_info["refused"] = True
+                                debug_info["original_schema"] = answer_schema.value
+                        else:
+                            logger.error(
+                                f"[RAG] Schema validation failed on retry for {answer_schema.value}, failing cleanly. request_id={request_id}"
+                            )
+                            if isinstance(debug_info, dict):
+                                debug_info["validation_failed"] = True
+                                debug_info["validation_schema"] = answer_schema.value
+                                debug_info["validation_attempts"] = 2
                         if isinstance(debug_info, dict):
-                            debug_info["validation_failed"] = True
-                            debug_info["validation_schema"] = answer_schema.value
-                            debug_info["validation_attempts"] = 2
-                    return
+                            debug_info["refused"] = True
+                            debug_info["refusal_reason"] = "VALIDATION_FAILED"
+                            debug_info["pipeline_marker"] = "FORCED_REFUSAL"
+                        return
                 else:
                     # Retry succeeded
                     final_answer_text = retry_answer_text

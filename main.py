@@ -107,7 +107,14 @@ import asyncio
 from app.services import ingestion
 from app.services import rag_service
 from app.services import clients
-from app.services.rag_service import index_files, answer_question, is_mock_mode, reset_collection
+from app.services.rag_service import (
+    index_files,
+    answer_question,
+    is_mock_mode,
+    reset_collection,
+    _construct_schema_correct_answer_from_evidence,
+    _select_fact_single_fallback,
+)
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.runtime import build_runtime_from_env
 from app.database import init_db, get_db, test_connection
@@ -140,6 +147,7 @@ from app.schemas.query import (
     DebugInfo,
     AnswerDecision,
     DecisionType,
+    AnswerSchema,
 )
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -170,6 +178,60 @@ def log_timing(event: str, duration: float, tenant_id: str, **extra):
         **extra
     }
     logger.info(json.dumps(log_data))
+
+
+def _resolve_clarification_question(clarification_data, fallback_question: str) -> str:
+    question = ""
+    if isinstance(clarification_data, dict):
+        question = clarification_data.get("question", "") or ""
+    if not question:
+        question = fallback_question or ""
+    if not question:
+        question = "Can you clarify your request?"
+    return question
+
+
+def _apply_empty_answer_invariant(
+    *,
+    full_answer: str,
+    is_refused: bool,
+    pipeline_marker: str,
+    decision: Optional[AnswerDecision],
+    question: str,
+    evidence: List[EvidenceItem],
+    sources: List[str],
+    debug_info: Optional[DebugInfo],
+    debug_enabled: bool,
+) -> tuple[str, bool, Optional[str], List[EvidenceItem], List[str], str]:
+    if pipeline_marker == "CLARIFICATION_REQUIRED" or is_refused:
+        return full_answer, is_refused, None, evidence, sources, pipeline_marker
+
+    if full_answer.strip():
+        return full_answer, is_refused, None, evidence, sources, pipeline_marker
+
+    if debug_enabled and debug_info is not None:
+        debug_info.empty_answer_invariant_tripped = True
+
+    fallback_marker = "EXTRACTOR_FACT_SINGLE"
+    answer_schema = getattr(decision, "answer_schema", None)
+    if answer_schema == AnswerSchema.FACT_SINGLE and evidence:
+        fallback_answer = _select_fact_single_fallback(
+            question,
+            evidence,
+        ) or _construct_schema_correct_answer_from_evidence(
+            AnswerSchema.FACT_SINGLE,
+            evidence,
+        )
+        if fallback_answer:
+            if debug_enabled and debug_info is not None:
+                debug_info.fallback_from_evidence = True
+            return fallback_answer, False, None, evidence, sources, fallback_marker
+
+    refusal_answer = "The document does not specify this."
+    if debug_enabled and debug_info is not None:
+        debug_info.refused = True
+        debug_info.refusal_reason = "VALIDATION_FAILED"
+    return refusal_answer, True, "VALIDATION_FAILED", [], [], "FORCED_REFUSAL"
 
 
 @app.on_event("startup")
@@ -1200,6 +1262,40 @@ async def query(
         if payload.debug >= 2 and 'debug_trace' in debug_info_dict:
             debug_info_dict['debug_trace']['streamed_token_preview'] = full_answer[:200]
 
+        # Handle CLARIFICATION_REQUIRED
+        if pipeline_marker == "CLARIFICATION_REQUIRED":
+            # Extract clarification details from debug_payload
+            clarification_data = debug_payload.get("clarification") if isinstance(debug_payload, dict) else None
+            from app.schemas.query import build_clarification
+
+            if clarification_data:
+                clarification_question = _resolve_clarification_question(
+                    clarification_data,
+                    full_answer,
+                )
+                final_response = build_clarification(
+                    question=clarification_question,
+                    options=clarification_data.get("options"),
+                    type=clarification_data.get("type", "OTHER")
+                )
+                # Attach debug info
+                final_response.debug_info = debug_info if payload.debug >= 1 else None
+                return JSONResponse(content=final_response.dict(exclude_none=True))
+
+        full_answer, is_refused, empty_refusal_reason, evidence, sources, pipeline_marker = _apply_empty_answer_invariant(
+            full_answer=full_answer,
+            is_refused=is_refused,
+            pipeline_marker=pipeline_marker,
+            decision=decision,
+            question=payload.question,
+            evidence=evidence,
+            sources=sources,
+            debug_info=debug_info if payload.debug >= 1 else None,
+            debug_enabled=payload.debug >= 1,
+        )
+        if empty_refusal_reason:
+            refusal_reason = empty_refusal_reason
+
         # Safety check (log-only): answer matches refusal phrase but refused=False
         if (not is_refused) and full_answer.strip() == refusal_answer:
             logger.error(
@@ -1220,22 +1316,6 @@ async def query(
                 debug_info=debug_info if payload.debug >= 1 else None
             )
             return JSONResponse(content=final_response.dict(exclude_none=True))
-
-        # Handle CLARIFICATION_REQUIRED
-        if pipeline_marker == "CLARIFICATION_REQUIRED":
-            # Extract clarification details from debug_payload
-            clarification_data = debug_payload.get("clarification") if isinstance(debug_payload, dict) else None
-            from app.schemas.query import build_clarification
-            
-            if clarification_data:
-                final_response = build_clarification(
-                    question=clarification_data.get("question", full_answer),
-                    options=clarification_data.get("options"),
-                    type=clarification_data.get("type", "OTHER")
-                )
-                # Attach debug info
-                final_response.debug_info = debug_info if payload.debug >= 1 else None
-                return JSONResponse(content=final_response.dict(exclude_none=True))
 
         # Otherwise, build normal response
         source_items = []
@@ -1286,8 +1366,12 @@ async def query(
             async for _ in answer_gen: pass
             
             if clarification_data:
+                clarification_question = _resolve_clarification_question(
+                    clarification_data,
+                    "",
+                )
                 final_response = build_clarification(
-                    question=clarification_data.get("question", ""),
+                    question=clarification_question,
                     options=clarification_data.get("options"),
                     type=clarification_data.get("type", "OTHER")
                 )
@@ -1314,9 +1398,23 @@ async def query(
         # Debug log for streaming final answer
         logger.info(f"FINAL_ANSWER request_id={request_id} answer_len={len(full_answer)} preview={full_answer[:200]}")
 
+        full_answer, is_refused, empty_refusal_reason, evidence, sources, pipeline_marker = _apply_empty_answer_invariant(
+            full_answer=full_answer,
+            is_refused=is_refused,
+            pipeline_marker=pipeline_marker,
+            decision=decision,
+            question=payload.question,
+            evidence=evidence,
+            sources=sources,
+            debug_info=debug_info if payload.debug >= 1 else None,
+            debug_enabled=payload.debug >= 1,
+        )
+        if empty_refusal_reason:
+            refusal_reason = empty_refusal_reason
+
         # Enforce decision before emitting final
         if is_refused:
-            logger.warning("[stream_response] Coercing to refusal based on explicit decision (refused=%s, reason=%s) for request_id=%s", is_refused, refusal_reason, request_id)
+            logger.warning("[stream_response] Coercing to refusal (refused=%s, reason=%s) for request_id=%s", is_refused, refusal_reason, request_id)
             final_response = QueryFinalResponse(
                 answer=refusal_answer,
                 refused=True,
