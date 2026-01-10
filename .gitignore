@@ -56,3 +56,5 @@ simple_test.txt
 debug.json
 final.json
 
+
+vectorstore_test/
