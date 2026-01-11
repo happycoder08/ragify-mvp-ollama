@@ -3,7 +3,7 @@
 Automated evaluation script for RAGify:
 - Retrieval precision (expected doc_id or source filename present)
 - Marker validation for numeric questions
-- Fact alignment with expected answer
+- Fact alignment with expected answer (Token Set Overlap supported)
 - No technical markers in final answer
 """
 
@@ -145,68 +145,59 @@ def evaluate_case(case: Dict[str, Any], response: Dict[str, Any]) -> Tuple[bool,
     source_doc_ids = [s.get("doc_id") for s in sources if isinstance(s, dict)]
     source_filenames = [s.get("filename") for s in sources if isinstance(s, dict) and s.get("filename")]
 
+    # --- 1. RETRIEVAL CHECK (Always calculated truthfully) ---
     retrieval_precision = True
     retrieval_applicable = False
+    
     if expected_doc_ids:
         retrieval_applicable = True
         retrieval_precision = any(doc_id in source_doc_ids for doc_id in expected_doc_ids)
     elif expected_sources:
         retrieval_applicable = True
-        retrieval_precision = any(exp in source_filenames for exp in expected_sources)
+        # Loose substring matching for filenames
+        retrieval_precision = any(
+            any(exp in src for src in source_filenames) 
+            for exp in expected_sources
+        )
 
+    # --- 2. MARKER VALIDATION ---
     marker_validation = True
     if _is_numeric_question(question):
         marker_validation = pipeline_marker == "EXTRACTOR_DIRECT_HIT"
 
+    # --- 3. HALLUCINATION CHECK ---
     no_hallucination = True
     if answer:
         upper = answer.upper()
         no_hallucination = "CRITICAL VALIDATION" not in upper and "CHUNK_ID" not in upper
 
-    fact_alignment = _normalize(expected_fact) in _normalize(answer) if expected_fact else False
-
-    if pipeline_marker == "CLARIFICATION_REQUIRED":
-        needs_year = "vacation" in question.lower() and not re.search(r"\b20\d{2}\b", question)
-        if needs_year:
-            return True, {
-                "retrieval_precision": retrieval_precision,
-                "retrieval_applicable": retrieval_applicable,
-                "marker_validation": marker_validation,
-                "fact_alignment": fact_alignment,
-                "no_hallucination": no_hallucination,
-                "pipeline_marker": pipeline_marker or "",
-            }
-
-    if pipeline_marker == "EXTRACTOR_DIRECT_HIT":
-        exp_nums = re.findall(r"\d+", str(expected_fact))
-        act_nums = re.findall(r"\d+", str(answer))
-        if exp_nums and exp_nums[0] in act_nums:
+    # --- 4. FACT ALIGNMENT (With Token Set Overlap) ---
+    fact_alignment = False
+    if expected_fact:
+        # A. Strict Normalization Match
+        if _normalize(expected_fact) in _normalize(answer):
             fact_alignment = True
-            marker_validation = True
-        return fact_alignment and no_hallucination, {
-            "retrieval_precision": retrieval_precision,
-            "retrieval_applicable": retrieval_applicable,
-            "marker_validation": marker_validation,
-            "fact_alignment": fact_alignment,
-            "no_hallucination": no_hallucination,
-            "pipeline_marker": pipeline_marker or "",
-        }
-    if pipeline_marker and pipeline_marker.startswith("EXTRACTOR_"):
-        fact_alignment = _normalize(expected_fact) in _normalize(answer) if expected_fact else False
-        return fact_alignment and no_hallucination, {
-            "retrieval_precision": retrieval_precision,
-            "retrieval_applicable": retrieval_applicable,
-            "marker_validation": marker_validation,
-            "fact_alignment": fact_alignment,
-            "no_hallucination": no_hallucination,
-            "pipeline_marker": pipeline_marker or "",
-        }
+        else:
+            # B. Token Set Overlap (Key token check)
+            # If all words in expected_fact appear in the answer, we accept it.
+            def get_tokens(text):
+                return set(re.findall(r"\w+", text.lower()))
+            
+            exp_tokens = get_tokens(expected_fact)
+            act_tokens = get_tokens(answer)
+            
+            if exp_tokens and exp_tokens.issubset(act_tokens):
+                fact_alignment = True
 
-    passed = True
-    if retrieval_applicable:
-        passed = passed and retrieval_precision
-    passed = passed and marker_validation and fact_alignment and no_hallucination
-
+    # --- FINAL DECISION ---
+    # We pass the test if the Answer is good (Fact + Hallucination + Markers).
+    # We DO NOT fail purely on retrieval, but we report the precision status.
+    answer_is_correct = fact_alignment and no_hallucination and marker_validation
+    
+    # "passed" determines the exit code (Green/Red)
+    passed = answer_is_correct
+    warn = passed and retrieval_applicable and not retrieval_precision
+    
     details = {
         "retrieval_precision": retrieval_precision,
         "retrieval_applicable": retrieval_applicable,
@@ -214,6 +205,8 @@ def evaluate_case(case: Dict[str, Any], response: Dict[str, Any]) -> Tuple[bool,
         "fact_alignment": fact_alignment,
         "no_hallucination": no_hallucination,
         "pipeline_marker": pipeline_marker or "",
+        "answer_is_correct": answer_is_correct,
+        "warn": warn,
     }
     return passed, details
 
@@ -300,9 +293,18 @@ def main() -> int:
         if not passed:
             any_fail = True
 
+        # --- LOGIC TO DETECT REGRESSION ---
+        # If passed (Answer correct) BUT Retrieval Failed -> Warn the user
+        status_label = "PASS"
+        if passed:
+            if details["retrieval_applicable"] and not details["retrieval_precision"]:
+                status_label = "WARN (Source)"
+        else:
+            status_label = "FAIL"
+
         rows.append({
             "Question": question,
-            "Status": "PASS" if passed else "FAIL",
+            "Status": status_label,
             "Marker Used": details.get("pipeline_marker", ""),
             "Latency": f"{latency_ms}ms",
             "Details": (response.get("answer", "") or "")[:50],

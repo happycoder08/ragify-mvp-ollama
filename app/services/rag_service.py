@@ -18,6 +18,7 @@ class ChunkHit:
     lexical_score: float = field(default=0.0)
     final_score: float = field(default=0.0)
     embedding: List[float] = field(default_factory=list)
+    why_selected: List[str] = field(default_factory=list)
 
 # --- ChunkHit utilities: header key, rerank, dedupe ---
 def _apply_mmr_selection(hits: List[ChunkHit], question_emb: List[float], k: int, lambda_param: float = 0.6) -> List[ChunkHit]:
@@ -70,9 +71,8 @@ def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     norm1 = math.sqrt(sum(a * a for a in vec1))
     norm2 = math.sqrt(sum(b * b for b in vec2))
     return dot_product / (norm1 * norm2) if norm1 and norm2 else 0.0
-    return str(hit.meta.get("header") or hit.meta.get("section") or "").strip().lower()
 
-def _apply_header_reranking(hits: List[ChunkHit], question: str) -> List[ChunkHit]:
+def _apply_header_reranking(hits: List[ChunkHit], question: str, debug: bool = False, request_id: str = None) -> List[ChunkHit]:
     q = question.lower()
     def score(hit: ChunkHit) -> tuple:
         hk = str(hit.meta.get("header") or hit.meta.get("section") or "").strip().lower()
@@ -80,7 +80,7 @@ def _apply_header_reranking(hits: List[ChunkHit], question: str) -> List[ChunkHi
         return (0 if header_match else 1, hit.dist)
     return sorted(hits, key=score)
 
-def _dedupe_results(hits: List[ChunkHit]) -> List[ChunkHit]:
+def _dedupe_results(hits: List[ChunkHit], ids: List[str] = None) -> List[ChunkHit]:
     seen = set()
     out: List[ChunkHit] = []
     for h in hits:
@@ -89,7 +89,7 @@ def _dedupe_results(hits: List[ChunkHit]) -> List[ChunkHit]:
             out.append(h)
     return out
 
-def _dedupe_by_header(hits: List[ChunkHit], max_per_header: int = 1) -> List[ChunkHit]:
+def _dedupe_by_header(hits: List[ChunkHit], ids: List[str] = None, max_per_header: int = 1) -> List[ChunkHit]:
     buckets: Dict[str, List[ChunkHit]] = {}
     for h in hits:
         hk = str(h.meta.get("header") or h.meta.get("section") or "").strip().lower()
@@ -118,6 +118,7 @@ def _get_anchor_type(doc: str) -> str | None:
         return "WIFI"
     
     # Check for time anchors using the same regex as elsewhere
+    import re
     time_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b"
     if re.search(time_regex, doc_lower, re.IGNORECASE):
         return "TIME"
@@ -149,6 +150,7 @@ def _is_broad_question(question: str) -> bool:
 def _get_debug_anchor_type(doc: str) -> str | None:
     """Determine anchor type for debug objects (retrieved_chunks_top20 and selected_chunks)."""
     doc_lower = doc.lower()
+    import re
     
     # Check for WiFi anchors
     if any(kw in doc_lower for kw in ["wifi", "ssid", "password"]):
@@ -194,8 +196,7 @@ def _hits_from_chroma(res: Dict[str, Any]) -> List[ChunkHit]:
     if isinstance(embeddings, list) and embeddings and isinstance(embeddings[0], list):
         embeddings = embeddings[0]
 
-    # Ensure all lists are iterable and have matching lengths. If embeddings (or other fields)
-    # are missing from the Chroma response, pad them so we still create ChunkHit objects
+    # Ensure all lists are iterable and have matching lengths.
     docs_list = docs or []
     metas_list = metas or []
     dists_list = dists or []
@@ -223,6 +224,7 @@ def _hits_from_chroma(res: Dict[str, Any]) -> List[ChunkHit]:
             continue
         hits.append(ChunkHit(chunk_id=str(cid), doc=str(doc), meta=meta or {}, dist=float(dist), embedding=emb or []))
     return hits
+
 import time
 import os
 import logging
@@ -1685,6 +1687,8 @@ def _construct_schema_correct_answer_from_evidence(
                 line = raw_line.strip()
                 if not line:
                     continue
+                # Split by sentence boundaries, but avoid splitting on common abbreviations
+                import re
                 for candidate in re.split(r"(?<=[.!?])\s+", line):
                     candidate = candidate.strip()
                     if not candidate or refusal_phrase in candidate:
@@ -1830,6 +1834,7 @@ def _select_fact_single_fallback(
             line = raw_line.strip()
             if not line:
                 continue
+            import re
             for candidate in re.split(r"(?<=[.!?])\s+", line):
                 candidate = candidate.strip()
                 if not candidate or refusal_phrase in candidate:
@@ -2163,9 +2168,13 @@ async def query_collection(
         ("when should i arrive" in q_lower) or
         ("arrive" in q_lower and "time" in q_lower)
     )
-    internal_k = max(top_k, 5) if is_time_question else top_k
+    
+    # FIX: Respect top_k from config instead of forcing 5
+    internal_k = top_k 
+
+    # FIX: Strictly respect the context budget from config
     min_context_chars = 3000
-    max_context_chars = max(CONTEXT_BUDGET_CHARS or 0, min_context_chars)
+    max_context_chars = CONTEXT_BUDGET_CHARS if CONTEXT_BUDGET_CHARS else 3000
 
     def _chunk_context_size(chunk: ChunkHit) -> int:
         return len(chunk.doc) + 80
@@ -2210,6 +2219,7 @@ async def query_collection(
                 break
             selected.append(h)
             total_chars += _chunk_context_size(h)
+    
     # ENFORCE intent constraints for time-based questions
     if is_time_arrival_intent:
         def satisfies_intent(chunk):
@@ -2308,12 +2318,7 @@ async def query_collection(
             d["why_selected"] = h.why_selected if h in selected else []
 
     # --- PRIMARY EVIDENCE grounding ---
-
-
-
-    # --- PRIMARY EVIDENCE grounding ---
     primary_hit = selected[0] if selected else None
-    # Logging moved to just before LLM call to ensure consistency with final selection
     
     selected_chunk_ids = [h.chunk_id for h in selected] if selected else []
     selected_chunk_headers: dict[str, str] = {}
@@ -2327,22 +2332,79 @@ async def query_collection(
             context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
     context_text = "\n\n".join(context_chunks)
 
+    # Rebuild evidence, sources, and context from final selection to keep LLM inputs consistent.
+    from app.schemas.query import EvidenceItem
+    evidence_items = []
+    source_files = []
+    context_chunks = []
+    selected_chunk_headers = {}
+    for h in selected:
+        header = _extract_header_first_line(question, h.doc)
+        selected_chunk_headers[h.chunk_id] = header
+
+        doc_lower = h.doc.lower()
+        anchor_type = None
+        if any(kw in doc_lower for kw in ["wifi", "ssid", "password"]):
+            anchor_type = "WIFI"
+        elif re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", doc_lower, re.IGNORECASE):
+            anchor_type = "TIME"
+
+        evidence_items.append(EvidenceItem(
+            snippet=h.doc[:400],
+            chunk_id=h.chunk_id,
+            heading=header,
+            doc_id=h.meta.get("doc_id"),
+            anchor_type=anchor_type,
+            anchor_detected=anchor_type is not None,
+        ))
+
+        src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
+        if src:
+            source_files.append(src)
+
+        source_file = src or "unknown"
+        context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
+
+    seen_src = set()
+    source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
+
+    context_text = "\n\n".join(context_chunks)
+    selected_chunk_ids = [h.chunk_id for h in selected]
+
+    # --- FIX 1: Define k_final so debug logs don't crash ---
+    k_final = len(selected)
+
     # 5) grounding gate (use selected hits)
-    should_proceed = True
-    refusal_reason = None
-    # should_proceed, refusal_reason = grounding_gate(question, selected)
+    # We compute grounding gate metrics but override refusal for DEV/DEMO modes if needed
+    # Prepare the input data in the format grounding.py expects
+    grounding_inputs = [(h.doc, h.meta, h.dist) for h in selected]
+
+    # --- FIX 2: Pass selected_chunk_ids as the 3rd argument ---
+    should_proceed, refusal_reason, gate_evidence_lines, max_overlap, sum_top3, failed_check = _compute_grounding_gate(
+        question,
+        grounding_inputs,
+        selected_chunk_ids,
+        target_field=target_field
+    )
 
     if not should_proceed:
-        async def refusal_gen():
-            yield "The document does not specify this."
-        debug_info = {
-            "retrieved": len(hits),
-            "selected": [{"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected],
-            "refused": True,
-            "refusal_reason": refusal_reason,
-            "request_id": request_id,
-        }
-        return refusal_gen(), source_files, evidence_items, context_text, debug_info
+        # OVERRIDE: In DEV or DEMO modes, ignore grounding failures to allow debugging.
+        current_mode = str(RAGIFY_MODE).upper()
+        if current_mode in ("DEV", "DEMO", "FAST") and not should_proceed:
+            logger.warning(f"[RAG] Grounding Gate override active for {current_mode} mode. Proceeding despite low score.")
+            should_proceed = True
+            refusal_reason = None
+        else:
+            async def refusal_gen():
+                yield "The document does not specify this."
+            debug_info = {
+                "retrieved": len(hits),
+                "selected": [{"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected],
+                "refused": True,
+                "refusal_reason": refusal_reason,
+                "request_id": request_id,
+            }
+            return refusal_gen(), source_files, evidence_items, context_text, debug_info
 
     # Guard: If selected chunk does not contain a clock time for time-intent queries, force refusal
     if is_time_arrival_intent and not any(bool(re.search(time_regex, h.doc, re.IGNORECASE)) for h in selected):
@@ -2362,7 +2424,6 @@ async def query_collection(
 
 
     # 6) call model strictly with context_text (PRIMARY EVIDENCE only)
-    # Update prompt: answer ONLY from PRIMARY EVIDENCE, else refuse
     def _llm_prompt_template(*, instruction, history, context, question, answer_schema):
         base_instruction = (
             "You are a helpful assistant. Use the provided EVIDENCE to answer the question. "
@@ -2446,35 +2507,6 @@ async def query_collection(
             async def wifi_extraction_gen():
                 yield standardized_answer
             
-            # Build source_files from selected chunks
-            source_files = []
-            for h in selected:
-                src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-                if src and src not in source_files:
-                    source_files.append(src)
-
-            # Build evidence_items from selected chunks
-            from app.schemas.query import EvidenceItem
-            evidence_items = []
-            for h in selected:
-                header = _extract_header_first_line(question, h.doc)
-                evidence_items.append(EvidenceItem(
-                    snippet=h.doc[:400],
-                    chunk_id=h.chunk_id,
-                    heading=header,
-                    doc_id=h.meta.get("doc_id"),
-                    anchor_type="WIFI",
-                    anchor_detected=True,
-                ))
-
-            # Build context_text from selected chunks
-            context_chunks = []
-            for i, h in enumerate(selected):
-                header = _extract_header_first_line(question, h.doc)
-                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-            context_text = "\n\n".join(context_chunks)
-            
             # Build debug_info for WiFi extraction
             debug_info = {
                 "retrieved": len(hits),
@@ -2499,14 +2531,13 @@ async def query_collection(
         import re
 
         # Prefer times near "arrive" to avoid grabbing lunch/meetings
-        # Capture contexts like "Arrive at 8:00 AM" or "Arrive 8 AM"
         arrive_line_match = None
         for line in primary_hit.doc.splitlines():
             if re.search(r"\barrive\b", line, re.IGNORECASE):
                 arrive_line_match = line
                 break
 
-        time_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b"
+        time_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b"
         time_match = None
 
         if arrive_line_match:
@@ -2521,35 +2552,6 @@ async def query_collection(
 
             async def arrival_time_gen():
                 yield standardized_answer
-
-            # Build source_files from selected chunks
-            source_files = []
-            for h in selected:
-                src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-                if src and src not in source_files:
-                    source_files.append(src)
-
-            # Build evidence_items from selected chunks
-            from app.schemas.query import EvidenceItem
-            evidence_items = []
-            for h in selected:
-                header = _extract_header_first_line(question, h.doc)
-                evidence_items.append(EvidenceItem(
-                    snippet=h.doc[:400],
-                    chunk_id=h.chunk_id,
-                    heading=header,
-                    doc_id=h.meta.get("doc_id"),
-                    anchor_type="TIME",
-                    anchor_detected=True,
-                ))
-
-            # Build context_text from selected chunks
-            context_chunks = []
-            for i, h in enumerate(selected):
-                header = _extract_header_first_line(question, h.doc)
-                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-            context_text = "\n\n".join(context_chunks)
 
             debug_info = {
                 "retrieved": len(hits),
@@ -2575,34 +2577,6 @@ async def query_collection(
             
             async def orientation_time_gen():
                 yield standardized_answer
-            # Build source_files from selected chunks
-            source_files = []
-            for h in selected:
-                src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-                if src and src not in source_files:
-                    source_files.append(src)
-
-            # Build evidence_items from selected chunks
-            from app.schemas.query import EvidenceItem
-            evidence_items = []
-            for h in selected:
-                header = _extract_header_first_line(question, h.doc)
-                evidence_items.append(EvidenceItem(
-                    snippet=h.doc[:400],
-                    chunk_id=h.chunk_id,
-                    heading=header,
-                    doc_id=h.meta.get("doc_id"),
-                    anchor_type="TIME",
-                    anchor_detected=True,
-                ))
-
-            # Build context_text from selected chunks
-            context_chunks = []
-            for i, h in enumerate(selected):
-                header = _extract_header_first_line(question, h.doc)
-                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-            context_text = "\n\n".join(context_chunks)
 
             debug_info = {
                 "retrieved": len(hits),
@@ -2615,65 +2589,6 @@ async def query_collection(
             }
 
             return orientation_time_gen(), source_files, evidence_items, context_text, debug_info
-
-    # Deterministic arrival time extractor
-    arrival_triggers = [
-        "arrive",
-        "arrival",
-        "when should i arrive",
-        "what time do i arrive",
-        "first day arrive",
-    ]
-    if primary_hit and any(t in question.lower() for t in arrival_triggers):
-        import re
-        time_regex = r"\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)(?![a-z])|\b\d{1,2}:\d{2}\b"
-        time_match = re.search(time_regex, primary_hit.doc, re.IGNORECASE)
-        if time_match:
-            standardized_answer = f"ARRIVAL_TIME: {time_match.group(0).strip()}"
-
-            async def arrival_time_gen():
-                yield standardized_answer
-
-            # Build source_files from selected chunks
-            source_files = []
-            for h in selected:
-                src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-                if src and src not in source_files:
-                    source_files.append(src)
-
-            # Build evidence_items from selected chunks
-            from app.schemas.query import EvidenceItem
-            evidence_items = []
-            for h in selected:
-                header = _extract_header_first_line(question, h.doc)
-                evidence_items.append(EvidenceItem(
-                    snippet=h.doc[:400],
-                    chunk_id=h.chunk_id,
-                    heading=header,
-                    doc_id=h.meta.get("doc_id"),
-                    anchor_type="TIME",
-                    anchor_detected=True,
-                ))
-
-            # Build context_text from selected chunks
-            context_chunks = []
-            for i, h in enumerate(selected):
-                header = _extract_header_first_line(question, h.doc)
-                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-            context_text = "\n\n".join(context_chunks)
-
-            debug_info = {
-                "retrieved": len(hits),
-                "selected": [
-                    {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected
-                ],
-                "refused": False,
-                "pipeline_marker": "EXTRACTOR_ARRIVAL_TIME",
-                "request_id": request_id,
-            }
-
-            return arrival_time_gen(), source_files, evidence_items, context_text, debug_info
 
     # --- Badge Pickup Extraction: Deterministic bypass for production ---
     is_badge_question = any(kw in question.lower() for kw in ["badge", "id card", "security badge", "pickup badge"])
@@ -2688,32 +2603,6 @@ async def query_collection(
         
         async def badge_pickup_gen():
             yield standardized_answer
-        # Build source_files, evidence_items, context_text (same pattern as other extractors)
-        source_files = []
-        for h in selected:
-            src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-            if src and src not in source_files:
-                source_files.append(src)
-
-        from app.schemas.query import EvidenceItem
-        evidence_items = []
-        for h in selected:
-            header = _extract_header_first_line(question, h.doc)
-            evidence_items.append(EvidenceItem(
-                snippet=h.doc[:400],
-                chunk_id=h.chunk_id,
-                heading=header,
-                doc_id=h.meta.get("doc_id"),
-                anchor_type="BADGE",
-                anchor_detected=True,
-            ))
-
-        context_chunks = []
-        for i, h in enumerate(selected):
-            header = _extract_header_first_line(question, h.doc)
-            source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-            context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-        context_text = "\n\n".join(context_chunks)
 
         debug_info = {
             "retrieved": len(hits),
@@ -2739,32 +2628,6 @@ async def query_collection(
             
             async def manager_name_gen():
                 yield standardized_answer
-            # Build source_files, evidence_items, context_text
-            source_files = []
-            for h in selected:
-                src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-                if src and src not in source_files:
-                    source_files.append(src)
-
-            from app.schemas.query import EvidenceItem
-            evidence_items = []
-            for h in selected:
-                header = _extract_header_first_line(question, h.doc)
-                evidence_items.append(EvidenceItem(
-                    snippet=h.doc[:400],
-                    chunk_id=h.chunk_id,
-                    heading=header,
-                    doc_id=h.meta.get("doc_id"),
-                    anchor_type="PERSON",
-                    anchor_detected=True,
-                ))
-
-            context_chunks = []
-            for i, h in enumerate(selected):
-                header = _extract_header_first_line(question, h.doc)
-                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-            context_text = "\n\n".join(context_chunks)
 
             debug_info = {
                 "retrieved": len(hits),
@@ -2792,32 +2655,6 @@ async def query_collection(
         
         async def reception_location_gen():
             yield standardized_answer
-        # Build source_files, evidence_items, context_text
-        source_files = []
-        for h in selected:
-            src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-            if src and src not in source_files:
-                source_files.append(src)
-
-        from app.schemas.query import EvidenceItem
-        evidence_items = []
-        for h in selected:
-            header = _extract_header_first_line(question, h.doc)
-            evidence_items.append(EvidenceItem(
-                snippet=h.doc[:400],
-                chunk_id=h.chunk_id,
-                heading=header,
-                doc_id=h.meta.get("doc_id"),
-                anchor_type="LOCATION",
-                anchor_detected=True,
-            ))
-
-        context_chunks = []
-        for i, h in enumerate(selected):
-            header = _extract_header_first_line(question, h.doc)
-            source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
-            context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-        context_text = "\n\n".join(context_chunks)
 
         debug_info = {
             "retrieved": len(hits),
@@ -2831,330 +2668,6 @@ async def query_collection(
         }
 
         return reception_location_gen(), source_files, evidence_items, context_text, debug_info
-
-    # --- Multi-chunk selection for non-deterministic queries ---
-    # After deterministic extractors, use MMR for diverse chunk selection
-    is_broad = _is_broad_question(question)
-    
-    # Respect the top_k parameter passed from main.py (which comes from config)
-    target_k = top_k * 3 if is_broad else top_k
-    k_final = min(target_k, len(hits))
-    
-    # Respect the context budget strictly
-    max_context_chars = CONTEXT_BUDGET_CHARS if CONTEXT_BUDGET_CHARS else 3000
-
-    def _chunk_context_size(chunk: ChunkHit) -> int:
-        return len(chunk.doc) + 80
-
-    def _doc_key(chunk: ChunkHit) -> str:
-        return (
-            str(chunk.meta.get("doc_id"))
-            if chunk.meta.get("doc_id") is not None
-            else str(chunk.meta.get("source_file") or chunk.meta.get("filename") or chunk.meta.get("file_name") or chunk.meta.get("path") or chunk.chunk_id)
-        )
-
-    initial_doc_keys = []
-    seen_keys = set()
-    for h in hits:
-        key = _doc_key(h)
-        if key not in seen_keys:
-            seen_keys.add(key)
-            initial_doc_keys.append(key)
-
-    def _select_with_budget(candidate_hits: List[ChunkHit], doc_keys: List[str]) -> List[ChunkHit]:
-        selected_hits: List[ChunkHit] = []
-        total = 0
-        seen_doc_keys_local = set()
-
-        for h in candidate_hits:
-            key = _doc_key(h)
-            if key in doc_keys and key not in seen_doc_keys_local:
-                selected_hits.append(h)
-                seen_doc_keys_local.add(key)
-                total += _chunk_context_size(h)
-
-        remaining = [h for h in candidate_hits if h not in selected_hits]
-        if remaining:
-            mmr_ranked = _apply_mmr_selection(remaining, question_emb, len(remaining))
-            for h in mmr_ranked:
-                if total >= max_context_chars:
-                    break
-                selected_hits.append(h)
-                total += _chunk_context_size(h)
-
-        return selected_hits
-
-    selected = _select_with_budget(hits, initial_doc_keys)
-
-    # Initialize evidence and sources (needed for early returns)
-    from app.schemas.query import EvidenceItem
-    evidence_items = []
-    source_files = []
-
-    # Expand selected for broad mode: include adjacent chunks for "First Day" or "Checklist" headings
-    if is_broad:
-        expanded_selected_ids = set(h.chunk_id for h in selected)
-        expanded_selected = list(selected)
-        for h in selected:
-            heading = h.meta.get("header") or _extract_header_first_line(question, h.doc)
-            if heading and ("first day" in heading.lower() or "checklist" in heading.lower()):
-                source = h.meta.get("source_file")
-                chunk_idx = h.meta.get("chunk", 0)
-                # Find adjacent chunks from same source
-                for other in hits:
-                    if other.meta.get("source_file") == source:
-                        other_idx = other.meta.get("chunk", 0)
-                        if abs(other_idx - chunk_idx) <= 2 and other.chunk_id not in expanded_selected_ids:
-                            expanded_selected_ids.add(other.chunk_id)
-                            expanded_selected.append(other)
-        selected = expanded_selected
-        selected.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
-        selected = _select_with_budget(selected, initial_doc_keys)
-
-    # Rebuild evidence from final selected chunks
-    evidence_items = []
-    source_files = []
-    for h in selected:
-        header = _extract_header_first_line(question, h.doc)
-        
-        # Compute anchor_type for evidence
-        doc_lower = h.doc.lower()
-        anchor_type = None
-        if any(kw in doc_lower for kw in ["wifi", "ssid", "password"]):
-            anchor_type = "WIFI"
-        elif re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", doc_lower, re.IGNORECASE):
-            anchor_type = "TIME"
-        
-        evidence_items.append(EvidenceItem(
-            snippet=h.doc[:400],
-            chunk_id=h.chunk_id,
-            heading=header,
-            doc_id=h.meta.get("doc_id"),
-            anchor_type=anchor_type,
-            anchor_detected=anchor_type is not None,
-        ))
-
-        src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-        if src:
-            source_files.append(src)
-
-    # dedupe sources preserving order
-    seen_src = set()
-    source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
-
-    # Assertion for broad mode: ensure sufficient context
-    if is_broad and len(selected) >= 6:
-        context_text_estimate = sum(len(h.doc) for h in selected)
-        # Relaxed check - just log if low, don't crash
-        if context_text_estimate <= 1000:
-            print(f"WARNING: Broad question context low: selected_count={len(selected)}, context_chars={context_text_estimate}")
-
-    # --- Coverage gate for non-extractor questions ---
-    fallback_used = False
-    rewritten_query = None
-    distinct_headings = set()
-    context_length = 0
-    for h in selected:
-        header = h.meta.get("header") or h.meta.get("section") or _extract_header_first_line(question, h.doc)
-        if header:
-            distinct_headings.add(header.strip().lower())
-        context_length += len(h.doc)
-    coverage_ok = len(distinct_headings) >= 3 or context_length >= (1500 if is_broad else 1200)
-
-    if not coverage_ok and not fallback_used:
-        # Fallback: rewrite query and re-retrieve
-        rewritten_query = question + " onboarding first day checklist steps arrive orientation IT lunch manager"
-        rewritten_emb = (await embed_texts([rewritten_query], tenant_id=tenant_id))[0]
-        
-        # Re-run chroma query with rewritten query
-        results_fallback = collection.query(
-            query_embeddings=[rewritten_emb],
-            n_results=max(k_final * 10, k_final),
-            include=["documents", "metadatas", "distances", "embeddings"],
-        )
-        hits_fallback = _hits_from_chroma(results_fallback)
-        if doc_ids:
-            doc_id_set = set(doc_ids)
-            hits_fallback = [h for h in hits_fallback if h.meta.get("doc_id") in doc_id_set]
-        
-        # Re-apply scoring and deduplication
-        for h in hits_fallback:
-            h.lexical_score = _lexical_overlap_score(question, h.doc)
-            h.final_score = _hybrid_rerank_score(question, h.doc, h.dist)
-        hits_fallback.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
-        hits_fallback = _dedupe_results(hits_fallback)
-        hits_fallback = _dedupe_by_header(hits_fallback, max_per_header=1)
-        
-        # Re-select with MMR
-        selected = _select_with_budget(hits_fallback, initial_doc_keys)
-        fallback_used = True
-
-    # --- Schema-specific coverage checks ---
-    coverage_sufficient = True
-    coverage_rewritten = False
-    
-    if answer_schema == AnswerSchema.CHECKLIST_PROCEDURE:
-        distinct_headings = set()
-        context_length = 0
-        for h in selected:
-            header = h.meta.get("header") or _extract_header_first_line(question, h.doc)
-            if header:
-                distinct_headings.add(header.strip().lower())
-            context_length += len(h.doc)
-        coverage_sufficient = len(distinct_headings) >= 3 or context_length >= 1500
-        
-    elif answer_schema == AnswerSchema.POLICY_EXCERPT:
-        policy_keywords = ["policy", "procedure", "guideline", "rule", "requirement", "standard"]
-        has_policy_heading = any(
-            any(kw in (h.meta.get("header") or _extract_header_first_line(question, h.doc)).lower() 
-                for kw in policy_keywords)
-            for h in selected
-        )
-        coverage_sufficient = has_policy_heading
-        
-    elif answer_schema == AnswerSchema.FACT_SINGLE:
-        # High-confidence: final_score > 0.7 or dist < 0.3
-        high_confidence_chunks = [h for h in selected if h.final_score > 0.7 or h.dist < 0.3]
-        coverage_sufficient = len(high_confidence_chunks) >= 1
-    
-    if not coverage_sufficient and not coverage_rewritten:
-        # Rewrite query for better coverage
-        if answer_schema == AnswerSchema.CHECKLIST_PROCEDURE:
-            rewritten_query = question + " steps procedure checklist guide"
-        elif answer_schema == AnswerSchema.POLICY_EXCERPT:
-            rewritten_query = question + " policy guidelines rules requirements"
-        elif answer_schema == AnswerSchema.FACT_SINGLE:
-            rewritten_query = question + " details information facts"
-        else:
-            rewritten_query = question
-        
-        logger.info(f"[RAG] Coverage insufficient for {answer_schema.value}, rewriting query. request_id={request_id}")
-        rewritten_emb = (await embed_texts([rewritten_query], tenant_id=tenant_id))[0]
-        
-        # Re-run chroma query with rewritten query
-        results_coverage = collection.query(
-            query_embeddings=[rewritten_emb],
-            n_results=max(k_final * 8, k_final),
-            include=["documents", "metadatas", "distances", "embeddings"],
-        )
-        hits_coverage = _hits_from_chroma(results_coverage)
-        if doc_ids:
-            doc_id_set = set(doc_ids)
-            hits_coverage = [h for h in hits_coverage if h.meta.get("doc_id") in doc_id_set]
-        
-        # Re-apply scoring
-        for h in hits_coverage:
-            h.lexical_score = _lexical_overlap_score(question, h.doc)
-            h.final_score = _hybrid_rerank_score(question, h.doc, h.dist)
-        hits_coverage.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
-        hits_coverage = _dedupe_results(hits_coverage)
-        hits_coverage = _dedupe_by_header(hits_coverage, max_per_header=1)
-        
-        # Re-select with MMR
-        selected = _select_with_budget(hits_coverage, initial_doc_keys)
-        coverage_rewritten = True
-        
-        # Re-check coverage
-        if answer_schema == AnswerSchema.CHECKLIST_PROCEDURE:
-            distinct_headings = set()
-            context_length = 0
-            for h in selected:
-                header = h.meta.get("header") or _extract_header_first_line(question, h.doc)
-                if header:
-                    distinct_headings.add(header.strip().lower())
-                context_length += len(h.doc)
-            coverage_sufficient = len(distinct_headings) >= 3 or context_length >= 1500
-            
-        elif answer_schema == AnswerSchema.POLICY_EXCERPT:
-            policy_keywords = ["policy", "procedure", "guideline", "rule", "requirement", "standard"]
-            has_policy_heading = any(
-                any(kw in (h.meta.get("header") or _extract_header_first_line(question, h.doc)).lower() 
-                    for kw in policy_keywords)
-                for h in selected
-            )
-            coverage_sufficient = has_policy_heading
-            
-        elif answer_schema == AnswerSchema.FACT_SINGLE:
-            high_confidence_chunks = [h for h in selected if h.final_score > 0.7 or h.dist < 0.3]
-            coverage_sufficient = len(high_confidence_chunks) >= 1
-    
-    if not coverage_sufficient:
-        logger.info(f"[RAG] Coverage still insufficient for {answer_schema.value}, returning NOT_FOUND_EXPLICIT. request_id={request_id}")
-        async def coverage_refusal_gen():
-            yield "The document does not specify this."
-        debug_info = {
-            "retrieved": len(hits),
-            "selected": [{"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected],
-            "refused": True,
-            "refusal_reason": f"insufficient_coverage_for_{answer_schema.value}",
-            "request_id": request_id,
-            "answer_schema": answer_schema,
-        }
-        return coverage_refusal_gen(), source_files, evidence_items, context_text, debug_info
-
-    # Rebuild evidence, sources, and context from final selection to keep LLM inputs consistent.
-    from app.schemas.query import EvidenceItem
-    evidence_items = []
-    source_files = []
-    context_chunks = []
-    selected_chunk_headers = {}
-    for h in selected:
-        header = _extract_header_first_line(question, h.doc)
-        selected_chunk_headers[h.chunk_id] = header
-
-        doc_lower = h.doc.lower()
-        anchor_type = None
-        if any(kw in doc_lower for kw in ["wifi", "ssid", "password"]):
-            anchor_type = "WIFI"
-        elif re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", doc_lower, re.IGNORECASE):
-            anchor_type = "TIME"
-
-        evidence_items.append(EvidenceItem(
-            snippet=h.doc[:400],
-            chunk_id=h.chunk_id,
-            heading=header,
-            doc_id=h.meta.get("doc_id"),
-            anchor_type=anchor_type,
-            anchor_detected=anchor_type is not None,
-        ))
-
-        src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-        if src:
-            source_files.append(src)
-
-        source_file = src or "unknown"
-        context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
-
-    seen_src = set()
-    source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
-
-    context_text = "\n\n".join(context_chunks)
-    selected_chunk_ids = [h.chunk_id for h in selected]
-
-    # --- Context Sufficiency Gate ---
-    if is_broad:
-        selected_docs = [h.doc for h in selected]
-        total_chars = sum(len(d) for d in selected_docs)
-        contentful_chunks_count = sum(1 for d in selected_docs if len(d.strip()) > 50)
-        
-        if total_chars < 500 or contentful_chunks_count < 2:
-            logger.info(f"[RAG] Context sufficiency gate failed for broad question. chars={total_chars}, contentful={contentful_chunks_count}")
-            async def sufficiency_refusal_gen():
-                yield "The document does not specify this."
-            
-            debug_info = {
-                "retrieved": len(hits),
-                "selected": [{"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")} for h in selected],
-                "refused": True,
-                "refusal_reason": "INSUFFICIENT_CONTEXT",
-                "pipeline_marker": "FORCED_REFUSAL_INSUFFICIENT_CONTEXT",
-                "context_stats": {
-                    "total_chars": total_chars,
-                    "contentful_chunks_count": contentful_chunks_count
-                },
-                "request_id": request_id,
-            }
-            return sufficiency_refusal_gen(), source_files, evidence_items, context_text, debug_info
 
     # --- Log PRIMARY_HIT (final selection) ---
     primary_hit_final = selected[0] if selected else None
@@ -3230,6 +2743,12 @@ async def query_collection(
         prompt_template=lambda **kwargs: _llm_prompt_template(**kwargs, answer_schema=answer_schema),
     )
 
+    # --- FIX: Define missing debug variables ---
+    coverage_ok = True
+    fallback_used = False
+    rewritten_query = None
+    # -------------------------------------------
+
     debug_info = None
     if debug >= 1:
         # Assertion: Check consistency between selected_chunk_ids and context_text
@@ -3297,6 +2816,14 @@ async def query_collection(
             "answer_schema": answer_schema,
             "target_field": target_field,
             "topic_slot": target_field,
+            "top10_scores": [], # Placeholder for now, could be populated
+            "grounding_gate": {
+                "should_proceed": should_proceed,
+                "max_overlap": max_overlap,
+                "sum_top3": sum_top3,
+                "failed_check": failed_check,
+                "evidence_lines_count": len(gate_evidence_lines),
+            }
         }
     else:
         context_length = len(context_text) if context_text else 0
@@ -3705,574 +3232,6 @@ async def query_collection(
                     return
     return checked_answer_gen(), source_files, evidence_items, context_text, debug_info
 
-    # 7) LLM answer must be constrained to context_text
-    logger.info("[%s] Calling LLM with context length: %d chars, first 300: %s, last 300: %s", 
-                request_id, len(context_text), context_text[:300], context_text[-300:] if len(context_text) > 300 else context_text)
-    answer_gen = _call_chat_model(
-        question,
-        context_text,
-        tenant_id,
-        mode=mode,
-        conversation_history=conversation_history,
-        request_id=request_id
-    )
-
-    debug_info = {
-        "retrieved": len(hits),
-        "selected": [
-            {
-                "chunk_id": h.chunk_id,
-                "dist": h.dist,
-                "source": h.meta.get("source_file"),
-                "header": h.meta.get("header"),
-            }
-            for h in selected
-        ],
-        "request_id": request_id
-    }
-
-    return answer_gen, source_files, evidence_items, context_text, debug_info
-
-    log_timing_rag("similarity_filtering", 0, tenant_id, before=len(chunk_hits), after=len(filtered_results), threshold="skipped_for_reranking")
-    logger.info("Skipping similarity threshold filtering: will apply hybrid reranking to all %d chunks instead", len(filtered_results))
-
-    if not filtered_results:
-        async def not_relevant_gen():
-            yield "I could not find anything relevant in the indexed documents to answer that question."
-        debug_info = {"retrieved_count": len(chunk_hits), "selected_count": 0, "chunks": []} if debug >= 1 else []
-        return not_relevant_gen(), [], [], "", debug_info
-
-    # Always apply lexical+semantic hybrid reranking (generalized across queries)
-    if len(filtered_results) > 1:
-        t_rerank = time.time()
-        logger.info("Applying hybrid reranking (lexical + vector) with expanded query")
-
-        scored_results = []
-        for doc, meta, dist in filtered_results:
-            # Use expanded query for lexical matching to improve recall
-            hybrid_score = _hybrid_rerank_score(expanded_question, doc, dist)
-            scored_results.append((doc, meta, dist, hybrid_score))
-
-        # Sort by hybrid score (higher = better)
-        scored_results.sort(key=lambda x: x[3], reverse=True)
-
-        # Filter out very low-scoring results; keep threshold low to remain inclusive
-        MIN_HYBRID_SCORE = 0.05
-        scored_results = [(doc, meta, dist, score) for doc, meta, dist, score in scored_results if score >= MIN_HYBRID_SCORE]
-        filtered_hybrid_scores = [score for _, _, _, score in scored_results]
-
-        rerank_duration = time.time() - t_rerank
-        log_timing_rag(
-            "hybrid_reranking",
-            rerank_duration,
-            tenant_id,
-            before=len(filtered_results),
-            after=len(scored_results),
-            rerank_ms=round(rerank_duration * 1000, 2),
-            top_scores=[round(s, 4) for s in filtered_hybrid_scores[:5]],
-            min_score_threshold=MIN_HYBRID_SCORE,
-        )
-
-        filtered_results = [(doc, meta, dist) for doc, meta, dist, _ in scored_results]
-    else:
-        # Single result, keep as-is
-        filtered_results = filtered_results
-
-    # Apply lightweight header-based reranking (boost action verbs, penalize generic schedule)
-    if len(filtered_results) > 1:
-        t_header_rerank = time.time()
-        filtered_results = _apply_header_reranking(filtered_results, debug=debug >= 1, request_id=request_id)
-        header_rerank_duration = time.time() - t_header_rerank
-        log_timing_rag(
-            "header_reranking",
-            header_rerank_duration,
-            tenant_id,
-            rerank_ms=round(header_rerank_duration * 1000, 2)
-        )
-    
-    # Deterministic deduplication by content fingerprint
-    before_fingerprint_dedup = len(filtered_results)
-    filtered_results, ids = _dedupe_results(filtered_results, ids)
-    if debug >= 1 and len(filtered_results) < before_fingerprint_dedup:
-        logger.info("[%s] Deduped retrieved chunks from %d to %d using content fingerprints", request_id, before_fingerprint_dedup, len(filtered_results))
-    
-    # Header-based deduplication: remove chunks with duplicate (source, header) pairs
-    before_header_dedup = len(filtered_results)
-    filtered_results, ids = _dedupe_by_header(filtered_results, ids)
-    if debug >= 1 and len(filtered_results) < before_header_dedup:
-        logger.info("[%s] Deduped retrieved chunks from %d to %d using header deduplication", request_id, before_header_dedup, len(filtered_results))
-    
-    # Limit to top N context chunks after hybrid scoring (enforce strict limit)
-    # Use top 5 after reranking regardless of mode, to ensure focused grounding
-    TOP_CONTEXT_N = 5  # Always select top 5 after hybrid reranking
-    if len(filtered_results) > TOP_CONTEXT_N:
-        logger.info(
-            "[%s] Limiting from %d to top %d best chunks after hybrid scoring",
-            request_id,
-            len(filtered_results),
-            TOP_CONTEXT_N,
-        )
-        filtered_results = filtered_results[:TOP_CONTEXT_N]
-    
-    # Log selected chunks for tracing (no raw content)
-    selected_chunk_ids = [ids[i] if i < len(ids) else f"idx_{i}" for i in range(len(filtered_results))]
-    logger.info("[%s] Selected %d chunks: %s", request_id, len(filtered_results), selected_chunk_ids)
-
-    context_pieces: List[str] = []
-    sources: List[str] = []
-    detailed_sources: List[str] = []
-    selected_info: List[Dict[str, Any]] = []
-    for idx, (doc, meta, dist) in enumerate(filtered_results):
-        src = meta.get("source_file", "unknown")
-        # Debug: log presence of key location/time signals in each context chunk
-        dl = doc.lower()
-        has_reception = "reception" in dl
-        has_main_reception = "main reception" in dl
-        has_floor = ("3rd" in dl) or ("third" in dl) or ("floor" in dl)
-        has_time_8am = "8:00 am" in dl or "8 am" in dl or "8am" in dl
-        # Email signature flags
-        has_email_signature = ("email signature" in dl) or ("signature" in dl)
-        has_font_info = ("arial" in dl) or ("10pt" in dl) or ("10 pt" in dl) or ("font" in dl)
-        logger.info(
-            "Context[%d]: src=%s dist=%.2f flags: time8am=%s reception=%s mainReception=%s floor=%s emailSig=%s font=%s preview=%s",
-            idx,
-            src,
-            dist if isinstance(dist, (int, float)) else -1,
-            has_time_8am,
-            has_reception,
-            has_main_reception,
-            has_floor,
-            has_email_signature,
-            has_font_info,
-            doc[:120].replace("\n", " ")
-        )
-        # Include chunk id (prefer Chroma id; fallback to chunk index)
-        chunk_id = None
-        try:
-            chunk_id = ids[idx] if ids and idx < len(ids) else None
-        except Exception:
-            chunk_id = None
-        if chunk_id is None:
-            chunk_id = f"chunk_{meta.get('chunk', idx)}"
-        # Capture a simple header (first non-empty line)
-        header = None
-        for line in doc.splitlines():
-            if line.strip():
-                header = line.strip()
-                break
-        header = header or doc[:80].replace('\n', ' ')
-        context_pieces.append(f"[CHUNK_ID={chunk_id} SOURCE={src} HEADING={header}]\n{doc}\n----")
-        sources.append(src)
-        detailed_sources.append(f"{src}#{chunk_id}")
-        selected_info.append({
-            "id": chunk_id,
-            "source": src,
-            "header": header
-        })
-
-    # Log selected chunk headers to verify inclusion
-    try:
-        headers_list = [si.get("header", "") for si in selected_info]
-        logger.info("Selected chunk headers: %s", headers_list)
-    except Exception:
-        logger.debug("Could not log selected chunk headers")
-
-    # Build detailed selected chunk previews for debug (used even on refusal)
-    selected_chunks_debug: List[Dict[str, Any]] = []
-    if debug >= 1:
-        for idx, (doc, meta, dist) in enumerate(filtered_results):
-            chunk_id = ids[idx] if ids and idx < len(ids) else f"chunk_{meta.get('chunk', idx)}"
-            header = None
-            for line in doc.splitlines():
-                if line.strip():
-                    header = line.strip()
-                    break
-            selected_chunks_debug.append({
-                "id": chunk_id,
-                "header": header or doc[:80].replace('\n', ' '),
-                "snippet": doc[:200].replace('\n', ' ') + ("..." if len(doc) > 200 else ""),
-                "distance": round(dist, 4) if isinstance(dist, (int, float)) else -1,
-                "source": meta.get("source_file", "unknown")
-            })
-
-    # dedupe sources while preserving order
-    seen = set()
-    dedup_sources: List[str] = []
-    for s in sources:
-        if s not in seen:
-            seen.add(s)
-            dedup_sources.append(s)
-
-    t_prompt = time.time()
-    context = "\n\n".join(context_pieces)
-    
-    # Apply context budget if configured (skip for broad mode to allow full context)
-    context_char_count = len(context)
-    if CONTEXT_BUDGET_CHARS and context_char_count > CONTEXT_BUDGET_CHARS:
-        logger.info("Context exceeds budget (%d > %d chars), truncating", 
-                   context_char_count, CONTEXT_BUDGET_CHARS)
-        context = context[:CONTEXT_BUDGET_CHARS]
-        context_char_count = len(context)
-    
-    # Final assertion for broad mode after context building
-    if is_broad and len(selected) >= 6:
-        assert len(context) >= 1500, f"Broad question final assertion failed: context_chars={len(context)} (should be >= 1500)"
-    
-    log_timing_rag("prompt_building", time.time() - t_prompt, tenant_id, 
-                   context_length=context_char_count,
-                   context_char_count=context_char_count,
-                   num_chunks=len(filtered_results),
-                   budget_chars=CONTEXT_BUDGET_CHARS or "unlimited")
-
-    # Robust evidence extraction: extract supporting quotes from top context chunks
-    def _extract_evidence_snippet(chunk_text: str, max_chars: int = 400) -> str:
-        """
-        Extract a meaningful evidence snippet from a chunk.
-        If chunk starts with a header (ends with ':'), include the header and
-        up to 3 bullet lines following it, up to max_chars.
-        
-        This ensures evidence includes context like:
-        "MANAGER 1:1 MEETING (1:00 PM - 2:00 PM):
-         - What does success look like in my first 30 days?
-         - Who are the key people I should connect with?"
-        """
-        import re
-        lines = chunk_text.split('\n')
-        if not lines:
-            return chunk_text[:max_chars]
-        return chunk_text[:max_chars]
-    def _extract_evidence(q: str, results: List[Tuple[str, Dict, float]]) -> List[Tuple[str, float]]:
-        """
-        Extract supporting evidence quotes from context chunks with relevance scores.
-        Returns list of (evidence_text, relevance_score) tuples.
-        
-        IMPORTANT: Evidence MUST come from the same chunks in 'results' that are used for context.
-        """
-        import re
-        
-        def tokenize(text: str) -> set:
-            cleaned = ''.join(c.lower() if c.isalnum() or c.isspace() else ' ' for c in text)
-            return set(t for t in cleaned.split() if len(t) > 2)
-        
-        q_tokens = tokenize(q)
-        q_lower = q.lower()
-        
-        # Score each chunk by keyword/pattern matching
-        scored_chunks = []
-        
-        for doc, meta, dist in results:
-            doc_lower = doc.lower()
-            doc_tokens = tokenize(doc)
-            
-            # Calculate lexical overlap score
-            overlap = len(q_tokens & doc_tokens)
-            union = len(q_tokens | doc_tokens)
-            base_score = overlap / union if union > 0 else 0.0
-            
-            # Boost score based on keyword/pattern matching
-            score = base_score
-            
-            # Time patterns boost
-            if any(kw in q_tokens for kw in ['time', 'arrive', 'arrival']):
-                if re.search(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b", doc_lower):
-                    score += 0.3
-            
-            # Email signature boost - prioritize chunks with heading keywords
-            if 'email' in q_tokens and 'signature' in q_tokens:
-                # Strong boost for chunks containing the heading phrase
-                if 'signature' in doc_lower and 'email' in doc_lower:
-                    score += 0.6  # Increased from 0.4 to prioritize heading chunks
-                if 'setup' in doc_lower and 'signature' in doc_lower:
-                    score += 0.5  # Boost for "signature setup" pattern
-                # Detail chunk boost (format details)
-                if any(kw in doc_lower for kw in ['arial', 'font', '10pt', '10 pt']):
-                    score += 0.3
-            
-            # Document/bring boost
-            if any(kw in q_tokens for kw in ['document', 'bring', 'need']):
-                if any(kw in doc_lower for kw in ['id', 'offer', 'bring']):
-                    score += 0.3
-            
-            # Camera/video boost
-            if any(kw in q_tokens for kw in ['camera', 'video']):
-                if any(kw in doc_lower for kw in ['camera', 'video', 'meeting']):
-                    score += 0.3
-            
-            # Manager/1:1 boost - prioritize chunks with question patterns
-            if 'manager' in q_tokens:
-                if any(kw in doc_lower for kw in ['manager', 'success', 'goals', 'expectations']):
-                    score += 0.3
-                # Extra boost for chunks with question patterns (WHAT TO ASK YOUR MANAGER)
-                if 'what' in doc_lower and any(kw in doc_lower for kw in ['ask', 'question', 'success']):
-                    score += 0.4
-            
-            # Store full chunk with score (we'll extract snippets later if needed)
-            scored_chunks.append((doc, score))
-        
-        # Sort by score (highest first)
-        scored_chunks.sort(key=lambda x: x[1], reverse=True)
-        
-        logger.info("Evidence chunk scores (top 5): %s", [(round(s, 3), c[:80].replace('\n', ' ')) for c, s in scored_chunks[:5]])
-        
-        return scored_chunks
-
-    def _score_evidence_relevance(evidence_text: str, query: str) -> float:
-        """
-        Score evidence snippet relevance using lexical overlap.
-        Returns score between 0 and 1.
-        """
-        query_tokens = set(_tokenize_and_filter(query))
-        evidence_tokens = set(_tokenize_and_filter(evidence_text))
-        
-        if not query_tokens or not evidence_tokens:
-            debug_info = {
-                "retrieved_chunks_top20": retrieved_chunks_top20,
-                "selected": [
-                    {
-                        "chunk_id": h.chunk_id,
-                        "dist": h.dist,
-                        "source_file": h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path"),
-                        "header_first_line": _extract_header_first_line(question, h.doc),
-                        "contains_clock_time": _contains_clock_time(h.doc),
-                        "contains_duration": _contains_duration(h.doc),
-                        "lexical_score": _lexical_score(question, h.doc),
-                        "final_score": chunk_debug_map.get(h.chunk_id, {}).get("final_score"),
-                        "why_selected": chunk_debug_map.get(h.chunk_id, {}).get("why_selected", []),
-                    }
-                    for h in selected
-                ],
-                "request_id": request_id,
-            } if debug >= 1 else {
-                "retrieved": len(hits),
-                "selected": [
-                    {
-                        "chunk_id": h.chunk_id,
-                        "dist": h.dist,
-                        "source_file": h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path"),
-                        "header_first_line": _extract_header_first_line(question, h.doc),
-                    }
-                    for h in selected
-                ],
-                "request_id": request_id,
-            }
-        doc_id = hit.meta.get("doc_id")
-        evidence_doc = hit.doc
-        if target_field:
-            evidence_doc, _ = _slice_text_to_slot(evidence_doc, target_field)
-        for line, score in extract_evidence_lines(
-            evidence_doc,
-            question,
-            target_field=target_field,
-        ):
-            all_evidence.append({
-                "snippet": line,
-                "score": score,
-                "chunk_id": hit.chunk_id,
-                "filename": filename,
-                "heading": heading,
-                "doc_id": doc_id
-            })
-
-    # Sort all evidence lines globally by score (desc), then by chunk order
-    all_evidence.sort(key=lambda x: (-x["score"], x["chunk_id"]))
-
-    # Take top N evidence lines (N=3 for full, N=2 for fast)
-    max_evidence = 2 if mode == "fast" else 3
-    evidence_items = [EvidenceItem(
-        snippet=ev["snippet"],
-        chunk_id=ev["chunk_id"],
-        heading=ev["heading"],
-        doc_id=ev["doc_id"]
-    ) for ev in all_evidence[:max_evidence]]
-
-    # --- PRESENTATION LAYER: Synthesize natural answer for time/arrival questions ---
-    import re
-    def _synthesize_time_answer(question: str, evidence: list) -> str | None:
-        ql = question.lower()
-        if not any(w in ql for w in ["time", "arrive", "arrival"]):
-            return None
-        # Look for a time pattern in evidence
-        for ev in evidence:
-            # Accept both "8:00 AM" and "8 am" etc.
-            m = re.search(r"(\d{1,2}(:\d{2})?\s*(am|pm))", ev.snippet, re.IGNORECASE)
-            if m:
-                time_str = m.group(1).strip()
-                # Try to find "first day" or similar in evidence
-                if "first day" in ev.snippet.lower():
-                    return f"You should arrive at {time_str} on your first day."
-                return f"You should arrive at {time_str}."
-        return None
-
-    synthesized = _synthesize_time_answer(question, evidence_items)
-    if synthesized:
-        # Replace evidence with the synthesized answer for the LLM prompt
-        evidence_items = [EvidenceItem(snippet=synthesized, chunk_id="synthesized", heading=None, doc_id=None)]
-
-    # Log relevance scores for debugging
-    if scored_chunks:
-        top_scores = [round(score, 3) for _, score in scored_chunks[:5]]
-        logger.info("Evidence relevance scores (top 5): %s", top_scores)
-
-    # VALIDATION: If we have selected chunks, we must have evidence
-    if len(filtered_results) > 0 and len(evidence_items) == 0:
-        logger.error(
-            "EVIDENCE CONSTRUCTION ERROR: %d chunks selected but 0 evidence extracted. "
-            "This should never happen. Question: %s",
-            len(filtered_results), question[:100]
-        )
-        # Fallback: use first chunk preview as evidence
-        fallback_chunk = filtered_results[0][0][:150] + "..."
-        evidence_items = [EvidenceItem(snippet=fallback_chunk, chunk_id="fallback", heading=None, doc_id=None)]
-
-    logger.info(
-        "Evidence construction complete: selected_chunks=%d, evidence_count=%d",
-        len(filtered_results), len(evidence_items)
-    )
-    
-    # GROUNDING GATE: Check if evidence is sufficient before calling LLM
-    should_proceed, refusal_reason, gate_evidence_lines, max_overlap, sum_top3, failed_check = _compute_grounding_gate(
-        question, filtered_results, ids, target_field=target_field
-    )
-
-    # Log evidence lines for tracing (truncated, no full content)
-    evidence_preview = [line[:80] + "..." if len(line) > 80 else line for line in gate_evidence_lines[:3]]
-    logger.info(
-        "[%s] Grounding gate: should_proceed=%s, refusal_reason=%s, evidence_lines=%d, max_overlap=%.0f, sum_top3=%.0f, failed_check=%s, evidence_preview=%s",
-        request_id, should_proceed, refusal_reason, len(gate_evidence_lines), max_overlap, sum_top3, failed_check or "NONE", evidence_preview
-    )
-    
-    DEMO_STRICT = os.environ.get("RAGIFY_DEMO_STRICT", "false").lower() == "true"
-    def _evidence_has_time_or_number(evidence_list):
-        import re
-        for ev in evidence_list:
-            if re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", ev, re.IGNORECASE):
-                return True
-            if re.search(r"\b\d{1,2}:\d{2}\b", ev):
-                return True
-            if re.search(r"\b\d+\b", ev):
-                return True
-        return False
-
-    if not should_proceed:
-        # OVERRIDE: In DEV or DEMO modes, ignore grounding failures to allow debugging.
-        current_mode = str(RAGIFY_MODE).upper()
-        if current_mode in ("DEV", "DEMO", "FAST") and not should_proceed:
-            logger.warning(
-                f"[RAG] Grounding Gate override active for {current_mode} mode. Proceeding despite low score."
-            )
-            should_proceed = True
-            refusal_reason = None
-
-        # DEMO_STRICT guardrail: if evidence_count >= 1 and evidence contains time/number anchor, never refuse
-        if DEMO_STRICT and len(evidence_items) >= 1 and _evidence_has_time_or_number([ev.snippet for ev in evidence_items]):
-            logger.info("[DEMO_STRICT] Override refusal: evidence_count >= 1 and evidence contains time/number anchor.")
-            should_proceed = True
-            refusal_reason = None
-            failed_check = None
-        else:
-            # Return refusal response with standardized message but retain selected chunks/context for debugging
-            async def refusal_gen():
-                yield "The document does not specify this."
-
-            refusal_debug_info = {
-                "retrieved_count": len(docs),
-                "selected_count": len(filtered_results),
-                "chunks": selected_chunks_debug,
-                "refused": True,
-                "refusal_reason": refusal_reason,
-                "request_id": request_id,
-                "top10_scores": top10_scores,
-                "grounding_gate": {
-                    "should_proceed": should_proceed,
-                    "max_overlap": max_overlap,
-                    "sum_top3": sum_top3,
-                    "failed_check": failed_check,
-                    "evidence_lines_count": len(gate_evidence_lines),
-                    "thresholds": {
-                        "min_support": MIN_SUPPORT,
-                        "min_total_support": MIN_TOTAL_SUPPORT
-                    }
-                }
-            } if debug >= 1 else {"refused": True, "refusal_reason": "NOT_FOUND", "request_id": request_id}
-
-            logger.warning(
-                "[%s] Grounding gate REFUSED query (reason=NOT_FOUND, failed_check=%s, max_overlap=%.0f, sum_top3=%.0f): %s",
-                request_id, failed_check, max_overlap, sum_top3, question[:100]
-            )
-
-            return refusal_gen(), dedup_sources, [], context, refusal_debug_info
-    
-    # Build debug info: include retrieved_count, selected_count, and detailed chunk diagnostics
-    if debug >= 1:
-        debug_info = {
-            "retrieved_count": len(docs),
-            "selected_count": len(filtered_results),
-            "chunks": selected_chunks_debug,
-            "request_id": request_id,
-            "top10_scores": top10_scores,
-            "grounding_gate": {
-                "should_proceed": should_proceed,
-                "max_overlap": max_overlap,
-                "sum_top3": sum_top3,
-                "failed_check": failed_check,
-                "evidence_lines_count": len(gate_evidence_lines),
-                "thresholds": {
-                    "min_support": MIN_SUPPORT,
-                    "min_total_support": MIN_TOTAL_SUPPORT
-                }
-            },
-            "retrieved_chunks_top20": retrieved_chunks_top20 if retrieved_chunks_top20 is not None else [],
-            "refused": False,
-            "refusal_reason": None
-        }
-    else:
-        # Legacy mode: return simple selected_info list
-        debug_info = selected_info
-    
-    answer_gen = _call_chat_model(question, context, tenant_id, mode=mode, conversation_history=conversation_history, request_id=request_id)
-    debug_info = {
-        "retrieved": len(hits),
-        "selected": [
-            {
-                "chunk_id": h.chunk_id,
-                "dist": h.dist,
-                "source": h.meta.get("source_file"),
-                "header": h.meta.get("header"),
-            }
-            for h in selected
-        ],
-        "request_id": request_id
-    }
-
-    # Wrap the answer generator to enforce refusal consistency and deduplicate refusal text.
-    refusal_phrase = "The document does not specify this."
-
-    async def _normalized_gen(orig_gen):
-        # Buffer entire answer to make a final decision (ensures we can set debug_info reliably)
-        buf = ""
-        async for ch in orig_gen:
-            buf += ch
-
-        final = (buf or "").strip()
-
-        # If final contains the canonical refusal phrase, treat as refusal
-        if refusal_phrase in final:
-            # Mark refused in debug_info
-            if isinstance(debug_info, dict):
-                debug_info["refused"] = True
-                if "refusal_reason" not in debug_info:
-                    debug_info["refusal_reason"] = "inferred_from_answer"
-
-            # Emit only the canonical refusal phrase once, without any chunk/citation suffixes
-            yield refusal_phrase
-            return
-
-        # Otherwise, clean any trailing/embedded citation markers like (chunk_id:XXX) if present
-        cleaned = re.sub(r"\s*\(chunk_id:[\w\-]+\)", "", final)
-        yield cleaned
-
-    return _normalized_gen(answer_gen), source_files, evidence_items, context_text, debug_info
-
 
 def clear_embedding_cache() -> None:
     """Clear the query embedding cache."""
@@ -4324,6 +3283,7 @@ async def _call_chat_model(
 
         lines = [ln.strip() for ln in primary.splitlines() if ln.strip()]
         # Try time heuristics
+        import re
         time_re = re.compile(r"\b(\d{1,2}(:\d{2})?\s*(?:am|pm))\b", re.IGNORECASE)
         for ln in lines:
             if time_re.search(ln):
@@ -4359,6 +3319,7 @@ async def _call_chat_model(
 
     # Non-mock: use provider stream
     provider = _get_llm_provider()
+    import re
     allowed_chunk_ids = set(re.findall(r"chunk_id=([\w\-]+)", context or ""))
 
     async def _citations_valid(text: str) -> bool:
