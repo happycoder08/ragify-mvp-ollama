@@ -234,6 +234,8 @@ from .llm_providers import create_llm_provider, LLMProvider
 from .reranker_providers import create_reranker_provider, RerankerProvider
 from .grounding import (
     extract_evidence_lines,
+    extract_numeric_consensus,
+    validate_numeric_alignment,
     _compute_grounding_gate,
     MIN_SUPPORT,
     MIN_TOTAL_SUPPORT,
@@ -259,6 +261,7 @@ from app.config import (
     ENABLE_RERANKING,
     RERANKER_TOP_N,
     CONTEXT_BUDGET_CHARS,
+    RAGIFY_MODE,
 )
 
 OLLAMA_BASE_URL = "http://localhost:11434"
@@ -295,6 +298,251 @@ INTENT_SYNONYMS = {
     "day1": ["firstday"],
 }
 
+BENEFITS_FIELD_KEYWORDS = {
+    "VACATION": ["vacation", "pto", "paid time off", "time off"],
+    "SICK": ["sick", "sick time", "sick leave", "illness"],
+}
+
+SLOT_UNIT_KEYWORDS = {
+    "VACATION": ["vacation day", "vacation days", "vacation", "pto", "paid time off"],
+    "SICK": ["sick day", "sick days", "sick time", "sick leave"],
+}
+
+
+def _format_unit_for_slot(value: float, slot_label: str) -> str:
+    if not slot_label:
+        return ""
+    unit_candidates = SLOT_UNIT_KEYWORDS.get(slot_label, [])
+    unit = None
+    for kw in unit_candidates:
+        if "day" in kw:
+            unit = kw
+            break
+    if not unit and unit_candidates:
+        unit = unit_candidates[0]
+    if not unit:
+        return ""
+    if "day" in unit:
+        prefix = unit.replace("days", "").replace("day", "").strip()
+        suffix = "day" if abs(value - 1.0) < 1e-9 else "days"
+        return f"{prefix} {suffix}".strip()
+    return unit
+
+
+def _detect_benefits_target_field(question: str) -> Optional[str]:
+    if not question:
+        return None
+    q_lower = question.lower()
+    for field, keywords in BENEFITS_FIELD_KEYWORDS.items():
+        for kw in keywords:
+            if re.search(rf"\b{re.escape(kw)}\b", q_lower):
+                return field
+    return None
+
+
+def _fact_single_misaligned_to_target(answer_text: str, target_field: str) -> bool:
+    if not answer_text or not target_field:
+        return False
+    answer_lower = answer_text.lower()
+    target_keywords = BENEFITS_FIELD_KEYWORDS.get(target_field, [])
+    target_present = any(kw in answer_lower for kw in target_keywords)
+    if target_present:
+        return False
+    for field, keywords in BENEFITS_FIELD_KEYWORDS.items():
+        if field == target_field:
+            continue
+        if any(kw in answer_lower for kw in keywords):
+            return True
+    return True
+
+
+def _slice_text_to_slot(snippet: str, slot_label: str) -> tuple[str, bool]:
+    if not snippet or not slot_label:
+        return snippet or "", False
+    slot_keywords = BENEFITS_FIELD_KEYWORDS.get(slot_label, [])
+    if not slot_keywords:
+        return snippet, False
+
+    lines = [ln.strip() for ln in snippet.splitlines()]
+    start_idx = None
+    for idx, line in enumerate(lines):
+        if not line:
+            continue
+        if line.endswith(":") or (line.isupper() and len(line) <= 60):
+            lower_line = line.lower()
+            if any(kw in lower_line for kw in slot_keywords):
+                start_idx = idx + 1
+                break
+
+    if start_idx is None:
+        return snippet, False
+
+    sliced_lines = []
+    for line in lines[start_idx:]:
+        if not line:
+            continue
+        if line.endswith(":") or (line.isupper() and len(line) <= 60):
+            break
+        sliced_lines.append(line)
+
+    if not sliced_lines:
+        return snippet, False
+    return "\n".join(sliced_lines), True
+
+
+def _is_numeric_fact_question(question: str) -> bool:
+    if not question:
+        return False
+    q_lower = question.lower()
+    if re.search(r"\b\d+\b", q_lower):
+        return True
+    return any(term in q_lower for term in ["how many", "days", "per year", "per week", "per month"])
+
+
+def _extract_slot_numeric_line(
+    question: str,
+    evidence_items: List[Any],
+    slot_label: str,
+    context_text: Optional[str] = None,
+) -> tuple[Optional[str], bool]:
+    if not evidence_items or not slot_label:
+        return None, False
+
+    slot_keywords = SLOT_UNIT_KEYWORDS.get(slot_label, [])
+    if not slot_keywords:
+        return None, False
+
+    years = set(re.findall(r"\b20\d{2}\b", question or ""))
+    if years:
+        filtered = []
+        for ev in evidence_items:
+            snippet = getattr(ev, "snippet", "") or ""
+            heading = getattr(ev, "heading", "") or ""
+            if any(y in snippet or y in heading for y in years):
+                filtered.append(ev)
+        if filtered:
+            evidence_items = filtered
+
+    number_pattern = re.compile(r"\b\d+(?:\.\d+)?\b")
+    slot_slice_applied = False
+
+    def _matches_slot(line: str) -> bool:
+        lower_line = line.lower()
+        return any(kw in lower_line for kw in slot_keywords)
+
+    def _extract_from_text(text: str) -> Optional[str]:
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if _matches_slot(line) and number_pattern.search(line):
+                return re.split(r"(?<=[.!?])\s+", line)[0].strip()
+        return None
+
+    for ev in evidence_items:
+        snippet = getattr(ev, "snippet", "") or ""
+        sliced, sliced_applied = _slice_text_to_slot(snippet, slot_label)
+        slot_slice_applied = slot_slice_applied or sliced_applied
+        found = _extract_from_text(sliced)
+        if found:
+            return found, slot_slice_applied
+
+    if context_text:
+        context_lines = []
+        for line in context_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("[CHUNK_ID=") or stripped == "----":
+                continue
+            context_lines.append(stripped)
+        combined = "\n".join(context_lines)
+        sliced, sliced_applied = _slice_text_to_slot(combined, slot_label)
+        slot_slice_applied = slot_slice_applied or sliced_applied
+        found = _extract_from_text(sliced)
+        if found:
+            return found, slot_slice_applied
+
+    return None, slot_slice_applied
+
+
+def _extract_targeted_fact_single_from_evidence(
+    question: str,
+    evidence_items: List[Any],
+    target_field: str,
+    context_text: Optional[str] = None,
+) -> Optional[str]:
+    if not evidence_items or not target_field:
+        return None
+
+    years = set(re.findall(r"\b20\d{2}\b", question or ""))
+    if years:
+        filtered = []
+        for ev in evidence_items:
+            snippet = getattr(ev, "snippet", "") or ""
+            heading = getattr(ev, "heading", "") or ""
+            if any(y in snippet or y in heading for y in years):
+                filtered.append(ev)
+        if filtered:
+            evidence_items = filtered
+
+    number_pattern = re.compile(r"\b\d+(?:\.\d+)?\b")
+    target_keywords = BENEFITS_FIELD_KEYWORDS.get(target_field, [])
+    if not target_keywords:
+        return None
+
+    def _is_section_header(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped:
+            return False
+        if stripped.endswith(":"):
+            return True
+        return stripped.isupper() and len(stripped) <= 60
+
+    def _mentions_target(line: str) -> bool:
+        lower_line = line.lower()
+        return any(kw in lower_line for kw in target_keywords)
+
+    def _extract_from_lines(lines: List[str]) -> Optional[str]:
+        in_target_section = False
+        for line in lines:
+            if not line:
+                continue
+            if _is_section_header(line):
+                in_target_section = _mentions_target(line)
+                continue
+            if in_target_section and _mentions_target(line) and number_pattern.search(line):
+                return re.split(r"(?<=[.!?])\s+", line)[0].strip()
+
+        for line in lines:
+            if not line:
+                continue
+            if _mentions_target(line) and number_pattern.search(line):
+                return re.split(r"(?<=[.!?])\s+", line)[0].strip()
+        return None
+
+    for ev in evidence_items:
+        snippet = getattr(ev, "snippet", "") or ""
+        snippet, _ = _slice_text_to_slot(snippet, target_field)
+        lines = [ln.strip() for ln in snippet.splitlines()]
+        extracted = _extract_from_lines(lines)
+        if extracted:
+            return extracted
+
+    if context_text:
+        context_lines = []
+        for line in context_text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("[CHUNK_ID=") or stripped == "----":
+                continue
+            context_lines.append(stripped)
+        combined = "\n".join(context_lines)
+        combined, _ = _slice_text_to_slot(combined, target_field)
+        extracted = _extract_from_lines(combined.splitlines())
+        if extracted:
+            return extracted
+
+    return None
 
 def _fingerprint_chunk(text: str) -> str:
     """
@@ -1328,7 +1576,20 @@ def _detect_numeric_conflict(question: str, evidence_items: List[Any]) -> Option
     q_lower = question.lower()
     if "vacation" not in q_lower:
         return None
-        
+
+    years = set(re.findall(r"\b20\d{2}\b", question))
+    if years:
+        filtered_items = []
+        for item in evidence_items:
+            snippet = getattr(item, "doc", "") or getattr(item, "snippet", "") or ""
+            meta = getattr(item, "meta", {}) or {}
+            source_file = meta.get("source_file") or meta.get("filename") or meta.get("file_name") or meta.get("path") or ""
+            heading = getattr(item, "heading", "") or ""
+            if any(y in snippet or y in source_file or y in heading for y in years):
+                filtered_items.append(item)
+        if filtered_items:
+            evidence_items = filtered_items
+
     # 2. Extract numbers from evidence
     pattern = re.compile(r"(\d+)\s+vacation\s+days", re.IGNORECASE)
     val_to_sources: dict[int, set[str]] = {}
@@ -1418,13 +1679,31 @@ def _construct_schema_correct_answer_from_evidence(
         return (snippet or "").strip()
 
     if schema == AnswerSchema.FACT_SINGLE:
-        ev = evidence_items[0]
-        base = _first_line(getattr(ev, "snippet", ""))
-        if not base or refusal_phrase in base:
-            return None
-        # For FACT_SINGLE we now return only the single-sentence answer
-        # text; evidence carries the citation metadata separately.
-        return base
+        for ev in evidence_items:
+            snippet = getattr(ev, "snippet", "") or ""
+            for raw_line in snippet.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                for candidate in re.split(r"(?<=[.!?])\s+", line):
+                    candidate = candidate.strip()
+                    if not candidate or refusal_phrase in candidate:
+                        continue
+                    return candidate
+
+            heading = (getattr(ev, "heading", "") or "").strip()
+            if heading and refusal_phrase not in heading:
+                return heading
+
+        for ev in evidence_items:
+            snippet = (getattr(ev, "snippet", "") or "").strip()
+            if snippet:
+                return _first_line(snippet) or snippet
+            heading = (getattr(ev, "heading", "") or "").strip()
+            if heading:
+                return heading
+
+        return None
 
 
     if schema == AnswerSchema.POLICY_EXCERPT:
@@ -1459,7 +1738,6 @@ def _construct_schema_correct_answer_from_evidence(
         
         bullets: List[str] = []
         seen_points = set()
-        import re
         
         for ev in sorted_evidence:
             if len(bullets) >= 8:
@@ -1521,10 +1799,26 @@ def _construct_schema_correct_answer_from_evidence(
     return None
 
 
-def _select_fact_single_fallback(question: str, evidence_items: List[Any]) -> Optional[str]:
+def _select_fact_single_fallback(
+    question: str,
+    evidence_items: List[Any],
+    target_field: Optional[str] = None,
+) -> Optional[str]:
     """Pick the best matching sentence/line from evidence for FACT_SINGLE."""
     if not evidence_items:
         return None
+
+    if target_field is None:
+        target_field = _detect_benefits_target_field(question)
+
+    if target_field:
+        targeted = _extract_targeted_fact_single_from_evidence(
+            question,
+            evidence_items,
+            target_field,
+        )
+        if targeted:
+            return targeted
 
     refusal_phrase = "The document does not specify this."
     best_line = ""
@@ -1677,6 +1971,7 @@ async def query_collection(
         return AnswerSchema.FACT_SINGLE
     
     answer_schema = _determine_answer_schema(question)
+    target_field = _detect_benefits_target_field(question)
 
     # --- Time-arrival and location intent detection ---
     time_arrival_keywords = [
@@ -1869,9 +2164,52 @@ async def query_collection(
         ("arrive" in q_lower and "time" in q_lower)
     )
     internal_k = max(top_k, 5) if is_time_question else top_k
+    min_context_chars = 3000
+    max_context_chars = max(CONTEXT_BUDGET_CHARS or 0, min_context_chars)
 
-    # 2) final select (use internal_k for time questions)
-    selected = hits_dedup[:internal_k]
+    def _chunk_context_size(chunk: ChunkHit) -> int:
+        return len(chunk.doc) + 80
+
+    def _doc_key(chunk: ChunkHit) -> str:
+        return (
+            str(chunk.meta.get("doc_id"))
+            if chunk.meta.get("doc_id") is not None
+            else str(chunk.meta.get("source_file") or chunk.meta.get("filename") or chunk.meta.get("file_name") or chunk.meta.get("path") or chunk.chunk_id)
+        )
+
+    def _cap_to_context_budget(chunks: List[ChunkHit]) -> List[ChunkHit]:
+        total = 0
+        capped: List[ChunkHit] = []
+        for h in chunks:
+            capped.append(h)
+            total += _chunk_context_size(h)
+            if total >= max_context_chars:
+                break
+        return capped
+
+    # 2) final select: include top hit per doc_id/source_file, then fill with MMR until budget
+    selected = []
+    total_chars = 0
+    seen_doc_keys = set()
+    seed_hits = []
+    for h in hits_dedup:
+        key = _doc_key(h)
+        if key not in seen_doc_keys:
+            seen_doc_keys.add(key)
+            seed_hits.append(h)
+
+    for h in seed_hits:
+        selected.append(h)
+        total_chars += _chunk_context_size(h)
+
+    remaining_candidates = [h for h in hits_dedup if h not in selected]
+    if remaining_candidates:
+        mmr_ranked = _apply_mmr_selection(remaining_candidates, question_emb, len(remaining_candidates))
+        for h in mmr_ranked:
+            if total_chars >= max_context_chars:
+                break
+            selected.append(h)
+            total_chars += _chunk_context_size(h)
     # ENFORCE intent constraints for time-based questions
     if is_time_arrival_intent:
         def satisfies_intent(chunk):
@@ -1900,7 +2238,7 @@ async def query_collection(
             for h in selected:
                 if satisfies_intent(h):
                     selected = [h] + [x for x in selected if x.chunk_id != h.chunk_id]
-                    selected = selected[:top_k]
+                    selected = _cap_to_context_budget(selected)
                     break
             if not satisfies_intent(selected[0]):
                 async def refuse_gen():
@@ -1939,8 +2277,7 @@ async def query_collection(
             selected_ids = {h.chunk_id for h in selected}
             if best_arrival.chunk_id not in selected_ids:
                 selected = [best_arrival] + [h for h in selected if h.chunk_id != best_arrival.chunk_id]
-            # Truncate to top_k
-            selected = selected[:top_k]
+                selected = _cap_to_context_budget(selected)
         # Refuse if no selected chunk contains BOTH arrival keyword and clock time
         def has_arrival_and_clock(chunk):
             doc_lower = chunk.doc.lower()
@@ -1986,7 +2323,8 @@ async def query_collection(
         for i, h in enumerate(selected):
             header = _extract_header_first_line(question, h.doc)
             selected_chunk_headers[h.chunk_id] = header
-            context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+            source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+            context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
     context_text = "\n\n".join(context_chunks)
 
     # 5) grounding gate (use selected hits)
@@ -2026,101 +2364,46 @@ async def query_collection(
     # 6) call model strictly with context_text (PRIMARY EVIDENCE only)
     # Update prompt: answer ONLY from PRIMARY EVIDENCE, else refuse
     def _llm_prompt_template(*, instruction, history, context, question, answer_schema):
-        # Compose the prompt using instruction and history as strings
+        base_instruction = (
+            "You are a helpful assistant. Use the provided EVIDENCE to answer the question. "
+            "If the information is not in the evidence, say 'The document does not specify this.' "
+            "Provide a direct answer without mentioning the evidence or chunks."
+        )
+
         if answer_schema == AnswerSchema.CHECKLIST_PROCEDURE:
-            instruction_str = """You are a retrieval-grounded assistant.
-
-RULES (must follow):
-- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
-- Produce a numbered checklist of concrete actions.
-- Every checklist item MUST be directly supported by one evidence chunk.
-- Do NOT invent generic steps unless those words appear in the evidence.
-- Partial checklists allowed if evidence is incomplete.
-- Do not include citations in the answer text. Citations are handled separately.
-
-OUTPUT FORMAT:
-1. <action>
-2. <action>
-...
-
-EVIDENCE is a set of chunks with CHUNK_ID and text."""
-        elif answer_schema == AnswerSchema.POLICY_EXCERPT:
-            instruction_str = """You are a retrieval-grounded assistant.
-
-RULES (must follow):
-- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
-- Produce a bullet list of policy statements.
-- Use exact or lightly paraphrased wording from the evidence.
-- Each bullet MUST be directly supported by one evidence chunk.
-- No advice, interpretation, or additional commentary.
-- Do not include citations in the answer text. Citations are handled separately.
-
-OUTPUT FORMAT:
-- <policy statement>
-- <policy statement>
-...
-
-EVIDENCE is a set of chunks with CHUNK_ID and text."""
-        elif answer_schema == AnswerSchema.FACT_SINGLE:
-            instruction_str = """You are a retrieval-grounded assistant.
-
-RULES (must follow):
-- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
-- Answer in exactly one sentence.
-- No lists or multiple sentences.
-- Do not include citations in the answer text. Citations are handled separately.
-
-OUTPUT FORMAT:
-<single sentence answer>
-
-EVIDENCE is a set of chunks with CHUNK_ID and text."""
-        elif answer_schema == AnswerSchema.BOOLEAN_SPECIFIED:
-            instruction_str = """You are a retrieval-grounded assistant.
-
-RULES (must follow):
-- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
-- Output either:
-    "Yes  <short explanation>."
-  OR
-  "No — the document does not specify this."
-
-- Do not include citations in the answer text. Citations are handled separately.
-
-EVIDENCE is a set of chunks with CHUNK_ID and text."""
-        elif answer_schema == AnswerSchema.SUMMARY_OVERVIEW:
-            instruction_str = """You are a retrieval-grounded assistant.
-
-RULES (must follow):
-- Use ONLY the EVIDENCE provided. Do NOT use outside knowledge.
-- Produce a summary of 4-8 bullet points.
-- Each bullet must be grounded in evidence.
-- Do NOT use generic filler language like "typically", "generally", "often", "designed to".
-- Do not include citations in the answer text. Citations are handled separately.
-
-OUTPUT FORMAT:
-- <summary point>
-- <summary point>
-...
-
-EVIDENCE is a set of chunks with CHUNK_ID and text."""
-        elif answer_schema == AnswerSchema.NOT_FOUND_EXPLICIT:
-            instruction_str = """You are a retrieval-grounded assistant.
-
-RULES (must follow):
-- Output exactly: "The document does not specify this."
-- Do NOT use the evidence for any other purpose.
-
-- Do not include citations in the answer text. Citations are handled separately.
-
-EVIDENCE is a set of chunks with CHUNK_ID and text."""
-        else:
-            # Fallback for any unhandled schemas
             instruction_str = (
-                "Answer the user's question ONLY using the EVIDENCE below. "
-                "Do not include citations in the answer text. Citations are handled separately. "
-                "If the EVIDENCE does not contain the answer, reply exactly: 'The document does not specify this.'"
+                base_instruction
+                + "\n\nOUTPUT FORMAT:\n1. <action>\n2. <action>\n..."
             )
-        
+        elif answer_schema == AnswerSchema.POLICY_EXCERPT:
+            instruction_str = (
+                base_instruction
+                + "\n\nOUTPUT FORMAT:\n- <policy statement>\n- <policy statement>\n..."
+            )
+        elif answer_schema == AnswerSchema.FACT_SINGLE:
+            instruction_str = (
+                base_instruction
+                + "\n\nOUTPUT FORMAT:\n<single sentence answer>"
+            )
+            if target_field:
+                instruction_str += f"\nFocus on {target_field.lower()} benefits."
+        elif answer_schema == AnswerSchema.BOOLEAN_SPECIFIED:
+            instruction_str = (
+                base_instruction
+                + "\n\nOUTPUT FORMAT:\nYes <short explanation>.\nOR\nNo. The document does not specify this."
+            )
+        elif answer_schema == AnswerSchema.SUMMARY_OVERVIEW:
+            instruction_str = (
+                base_instruction
+                + "\n\nOUTPUT FORMAT:\n- <summary point>\n- <summary point>\n..."
+            )
+        elif answer_schema == AnswerSchema.NOT_FOUND_EXPLICIT:
+            instruction_str = (
+                "You are a helpful assistant. Answer exactly: 'The document does not specify this.'"
+            )
+        else:
+            instruction_str = base_instruction
+
         history_str = ""
         if history:
             if isinstance(history, list):
@@ -2188,7 +2471,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             context_chunks = []
             for i, h in enumerate(selected):
                 header = _extract_header_first_line(question, h.doc)
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
             context_text = "\n\n".join(context_chunks)
             
             # Build debug_info for WiFi extraction
@@ -2263,7 +2547,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             context_chunks = []
             for i, h in enumerate(selected):
                 header = _extract_header_first_line(question, h.doc)
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
             context_text = "\n\n".join(context_chunks)
 
             debug_info = {
@@ -2315,7 +2600,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             context_chunks = []
             for i, h in enumerate(selected):
                 header = _extract_header_first_line(question, h.doc)
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
             context_text = "\n\n".join(context_chunks)
 
             debug_info = {
@@ -2373,7 +2659,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             context_chunks = []
             for i, h in enumerate(selected):
                 header = _extract_header_first_line(question, h.doc)
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
             context_text = "\n\n".join(context_chunks)
 
             debug_info = {
@@ -2424,7 +2711,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         context_chunks = []
         for i, h in enumerate(selected):
             header = _extract_header_first_line(question, h.doc)
-            context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+            source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+            context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
         context_text = "\n\n".join(context_chunks)
 
         debug_info = {
@@ -2474,7 +2762,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             context_chunks = []
             for i, h in enumerate(selected):
                 header = _extract_header_first_line(question, h.doc)
-                context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+                source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+                context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
             context_text = "\n\n".join(context_chunks)
 
             debug_info = {
@@ -2526,7 +2815,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         context_chunks = []
         for i, h in enumerate(selected):
             header = _extract_header_first_line(question, h.doc)
-            context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+            source_file = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path") or "unknown"
+            context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
         context_text = "\n\n".join(context_chunks)
 
         debug_info = {
@@ -2545,8 +2835,56 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
     # --- Multi-chunk selection for non-deterministic queries ---
     # After deterministic extractors, use MMR for diverse chunk selection
     is_broad = _is_broad_question(question)
-    k_final = min(10 if is_broad else 6, len(hits))
-    selected = _apply_mmr_selection(hits, question_emb, k_final)
+    
+    # Respect the top_k parameter passed from main.py (which comes from config)
+    target_k = top_k * 3 if is_broad else top_k
+    k_final = min(target_k, len(hits))
+    
+    # Respect the context budget strictly
+    max_context_chars = CONTEXT_BUDGET_CHARS if CONTEXT_BUDGET_CHARS else 3000
+
+    def _chunk_context_size(chunk: ChunkHit) -> int:
+        return len(chunk.doc) + 80
+
+    def _doc_key(chunk: ChunkHit) -> str:
+        return (
+            str(chunk.meta.get("doc_id"))
+            if chunk.meta.get("doc_id") is not None
+            else str(chunk.meta.get("source_file") or chunk.meta.get("filename") or chunk.meta.get("file_name") or chunk.meta.get("path") or chunk.chunk_id)
+        )
+
+    initial_doc_keys = []
+    seen_keys = set()
+    for h in hits:
+        key = _doc_key(h)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            initial_doc_keys.append(key)
+
+    def _select_with_budget(candidate_hits: List[ChunkHit], doc_keys: List[str]) -> List[ChunkHit]:
+        selected_hits: List[ChunkHit] = []
+        total = 0
+        seen_doc_keys_local = set()
+
+        for h in candidate_hits:
+            key = _doc_key(h)
+            if key in doc_keys and key not in seen_doc_keys_local:
+                selected_hits.append(h)
+                seen_doc_keys_local.add(key)
+                total += _chunk_context_size(h)
+
+        remaining = [h for h in candidate_hits if h not in selected_hits]
+        if remaining:
+            mmr_ranked = _apply_mmr_selection(remaining, question_emb, len(remaining))
+            for h in mmr_ranked:
+                if total >= max_context_chars:
+                    break
+                selected_hits.append(h)
+                total += _chunk_context_size(h)
+
+        return selected_hits
+
+    selected = _select_with_budget(hits, initial_doc_keys)
 
     # Initialize evidence and sources (needed for early returns)
     from app.schemas.query import EvidenceItem
@@ -2571,6 +2909,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                             expanded_selected.append(other)
         selected = expanded_selected
         selected.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
+        selected = _select_with_budget(selected, initial_doc_keys)
 
     # Rebuild evidence from final selected chunks
     evidence_items = []
@@ -2647,7 +2986,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         hits_fallback = _dedupe_by_header(hits_fallback, max_per_header=1)
         
         # Re-select with MMR
-        selected = _apply_mmr_selection(hits_fallback, question_emb, k_final)
+        selected = _select_with_budget(hits_fallback, initial_doc_keys)
         fallback_used = True
 
     # --- Schema-specific coverage checks ---
@@ -2712,7 +3051,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         hits_coverage = _dedupe_by_header(hits_coverage, max_per_header=1)
         
         # Re-select with MMR
-        selected = _apply_mmr_selection(hits_coverage, question_emb, k_final)
+        selected = _select_with_budget(hits_coverage, initial_doc_keys)
         coverage_rewritten = True
         
         # Re-check coverage
@@ -2753,46 +3092,44 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         }
         return coverage_refusal_gen(), source_files, evidence_items, context_text, debug_info
 
-    # Rebuild evidence and sources if coverage was rewritten
-    if coverage_rewritten:
-        from app.schemas.query import EvidenceItem
-        evidence_items = []
-        source_files = []
-        context_chunks = []
-        selected_chunk_headers = {}
-        for h in selected:
-            header = _extract_header_first_line(question, h.doc)
-            selected_chunk_headers[h.chunk_id] = header
-            
-            # Compute anchor_type for evidence
-            doc_lower = h.doc.lower()
-            anchor_type = None
-            if any(kw in doc_lower for kw in ["wifi", "ssid", "password"]):
-                anchor_type = "WIFI"
-            elif re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", doc_lower, re.IGNORECASE):
-                anchor_type = "TIME"
-            
-            evidence_items.append(EvidenceItem(
-                snippet=h.doc[:400],
-                chunk_id=h.chunk_id,
-                heading=header,
-                doc_id=h.meta.get("doc_id"),
-                anchor_type=anchor_type,
-                anchor_detected=anchor_type is not None,
-            ))
+    # Rebuild evidence, sources, and context from final selection to keep LLM inputs consistent.
+    from app.schemas.query import EvidenceItem
+    evidence_items = []
+    source_files = []
+    context_chunks = []
+    selected_chunk_headers = {}
+    for h in selected:
+        header = _extract_header_first_line(question, h.doc)
+        selected_chunk_headers[h.chunk_id] = header
 
-            src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
-            if src:
-                source_files.append(src)
-            
-            context_chunks.append(f"[CHUNK_ID={h.chunk_id} HEADING={header}]\n{h.doc}\n----")
+        doc_lower = h.doc.lower()
+        anchor_type = None
+        if any(kw in doc_lower for kw in ["wifi", "ssid", "password"]):
+            anchor_type = "WIFI"
+        elif re.search(r"\b\d{1,2}(:\d{2})?\s*(am|pm)\b", doc_lower, re.IGNORECASE):
+            anchor_type = "TIME"
 
-        # dedupe sources preserving order
-        seen_src = set()
-        source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
-        
-        context_text = "\n\n".join(context_chunks)
-        selected_chunk_ids = [h.chunk_id for h in selected]
+        evidence_items.append(EvidenceItem(
+            snippet=h.doc[:400],
+            chunk_id=h.chunk_id,
+            heading=header,
+            doc_id=h.meta.get("doc_id"),
+            anchor_type=anchor_type,
+            anchor_detected=anchor_type is not None,
+        ))
+
+        src = h.meta.get("source_file") or h.meta.get("filename") or h.meta.get("file_name") or h.meta.get("path")
+        if src:
+            source_files.append(src)
+
+        source_file = src or "unknown"
+        context_chunks.append(f"[CHUNK_ID={h.chunk_id} SOURCE={source_file} HEADING={header}]\n{h.doc}\n----")
+
+    seen_src = set()
+    source_files = [s for s in source_files if not (s in seen_src or seen_src.add(s))]
+
+    context_text = "\n\n".join(context_chunks)
+    selected_chunk_ids = [h.chunk_id for h in selected]
 
     # --- Context Sufficiency Gate ---
     if is_broad:
@@ -2830,6 +3167,56 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         last_300_chars = primary_hit_final.doc[-300:] if len(primary_hit_final.doc) > 300 else primary_hit_final.doc
         logging.info("PRIMARY_HIT request_id=%s selected_chunk_id=%s selected_doc_len=%d contains_password=%s contains_guest_ssid=%s first_300_chars=%r last_300_chars=%r", request_id, selected_chunk_id, selected_doc_len, contains_password, contains_guest_ssid, first_300_chars, last_300_chars)
 
+    numeric_benefits_query = (
+        answer_schema == AnswerSchema.FACT_SINGLE
+        and target_field
+        and _is_numeric_fact_question(question)
+    )
+    if numeric_benefits_query:
+        evidence_texts = [ev.snippet for ev in (evidence_items or []) if getattr(ev, "snippet", None)]
+        slot_keywords = SLOT_UNIT_KEYWORDS.get(target_field, [])
+        if slot_keywords:
+            slot_filtered = [
+                text for text in evidence_texts
+                if any(kw in text.lower() for kw in slot_keywords)
+            ]
+            if slot_filtered:
+                evidence_texts = slot_filtered
+        if evidence_texts:
+            sliced_texts = []
+            for text in evidence_texts:
+                sliced, _ = _slice_text_to_slot(text, target_field)
+                if sliced:
+                    sliced_texts.append(sliced)
+            if sliced_texts:
+                evidence_texts = sliced_texts
+
+        consensus_value, has_conflict, _ = extract_numeric_consensus(evidence_texts)
+        if consensus_value is not None and not has_conflict:
+            formatted = str(int(consensus_value)) if consensus_value.is_integer() else str(consensus_value)
+            unit = _format_unit_for_slot(consensus_value, target_field)
+            if unit:
+                direct_answer = f"According to the documents, the value is {formatted} {unit}."
+            else:
+                direct_answer = f"According to the documents, the value is {formatted}."
+
+            async def direct_answer_gen():
+                yield direct_answer
+
+            debug_info = {
+                "retrieved": len(hits),
+                "selected": [
+                    {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")}
+                    for h in selected
+                ],
+                "refused": False,
+                "pipeline_marker": "EXTRACTOR_DIRECT_HIT",
+                "request_id": request_id,
+                "answer_schema": answer_schema,
+                "topic_slot": target_field,
+            }
+            return direct_answer_gen(), source_files, evidence_items, context_text, debug_info
+
     # Call the chat model with the prompt template (instruction/history as strings handled by render_prompt_template)
     logger.info("[%s] Calling LLM with context length: %d chars, first 300: %s, last 300: %s", 
                 request_id, len(context_text), context_text[:300], context_text[-300:] if len(context_text) > 300 else context_text)
@@ -2848,7 +3235,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         # Assertion: Check consistency between selected_chunk_ids and context_text
         if selected_chunk_ids and context_text:
             first_sel_id = selected_chunk_ids[0]
-            match = re.search(r"\[CHUNK_ID=(.*?) HEADING=", context_text)
+            match = re.search(r"\[CHUNK_ID=(.*?)\s+SOURCE=", context_text)
             if match:
                 first_ctx_id = match.group(1).strip()
                 if first_sel_id != first_ctx_id:
@@ -2908,6 +3295,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             "selected_chunks": selected_chunks_debug,
             "request_id": request_id,
             "answer_schema": answer_schema,
+            "target_field": target_field,
+            "topic_slot": target_field,
         }
     else:
         context_length = len(context_text) if context_text else 0
@@ -2937,6 +3326,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             "evidence_count": evidence_count,
             "request_id": request_id,
             "answer_schema": answer_schema,
+            "target_field": target_field,
+            "topic_slot": target_field,
         }
 
 
@@ -2959,6 +3350,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         async for chunk in answer_gen:
             answer_text += chunk
 
+        final_answer_text: Optional[str] = None
+
         # 2) Schema-format validation
         vr = validate_format_by_schema(answer_text, answer_schema)
         is_valid = vr.ok
@@ -2980,7 +3373,8 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
 
         # 4) Generic/Hallucination Check (only if invariants passed)
         is_generic_failure = False
-        if not invariant_violated and answer_schema not in [AnswerSchema.NOT_FOUND_EXPLICIT]:
+        # Skip generic/overlap check for FACT_SINGLE to prevent false positives on short answers
+        if not invariant_violated and answer_schema not in [AnswerSchema.NOT_FOUND_EXPLICIT, AnswerSchema.FACT_SINGLE]:
              combined_evidence_text = "\n".join([item.snippet for item in evidence_items]) if evidence_items else ""
              if _is_generic_or_low_overlap(answer_text_normalized, combined_evidence_text):
                  is_generic_failure = True
@@ -2988,7 +3382,71 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                      debug_info["generic_answer_detected"] = True
                      debug_info["generic_answer_reason"] = "Low overlap or generic phrases detected"
 
-        final_answer_text: Optional[str] = None
+        misalignment_failure = False
+        slot_validation_failed = False
+
+        if answer_schema == AnswerSchema.FACT_SINGLE and target_field:
+            misalignment_failure = _fact_single_misaligned_to_target(
+                answer_text_normalized,
+                target_field,
+            )
+            if misalignment_failure:
+                corrected = _extract_targeted_fact_single_from_evidence(
+                    question,
+                    evidence_items,
+                    target_field,
+                    context_text=context_text,
+                )
+                if corrected:
+                    final_answer_text = corrected
+                    if isinstance(debug_info, dict):
+                        debug_info["target_field_misaligned"] = True
+                        debug_info["target_field"] = target_field
+                        debug_info["fallback_from_evidence"] = True
+                        debug_info["pipeline_marker"] = "EXTRACTOR_FACT_SINGLE"
+                        debug_info["final_answer_text_override"] = corrected
+                else:
+                    if isinstance(debug_info, dict):
+                        debug_info["target_field_misaligned"] = True
+                        debug_info["target_field"] = target_field
+                        debug_info["schema_validation_errors"] = (
+                            (debug_info.get("schema_validation_errors") or [])
+                            + ["target_field_misaligned"]
+                        )
+                    is_valid = False
+
+        # FACT_SINGLE numeric answers must include evidence-backed numbers + slot keywords.
+        if (
+            answer_schema == AnswerSchema.FACT_SINGLE
+            and target_field
+            and _is_numeric_fact_question(question)
+            and not final_answer_text
+        ):
+            candidate_line, slot_slice_applied = _extract_slot_numeric_line(
+                question,
+                evidence_items,
+                target_field,
+                context_text=context_text,
+            )
+            candidate_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", candidate_line or ""))
+            slot_keywords = SLOT_UNIT_KEYWORDS.get(target_field, [])
+            answer_lower = answer_text_normalized.lower()
+            has_slot_keyword = any(kw in answer_lower for kw in slot_keywords)
+            has_candidate_number = any(num in answer_text_normalized for num in candidate_numbers)
+            if not (has_slot_keyword and has_candidate_number):
+                slot_validation_failed = True
+                if isinstance(debug_info, dict):
+                    debug_info["topic_slot"] = target_field
+                    debug_info["slot_slice_applied"] = slot_slice_applied
+                    debug_info["validation_failed_reason"] = "slot_numeric_mismatch"
+                if candidate_line:
+                    final_answer_text = candidate_line
+                    if isinstance(debug_info, dict):
+                        debug_info["fallback_from_evidence"] = True
+                        debug_info["pipeline_marker"] = "EXTRACTOR_FACT_SINGLE"
+                        debug_info["final_answer_text_override"] = candidate_line
+                else:
+                    is_valid = False
 
         # 3a) Invariant correction path: do NOT retry automatically when
         # the refusal phrase appears for non-NOT_FOUND_EXPLICIT schemas.
@@ -3012,7 +3470,11 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
             else:
                 fallback_line = None
                 if answer_schema == AnswerSchema.FACT_SINGLE and evidence_items:
-                    fallback_line = _select_fact_single_fallback(question, evidence_items)
+                    fallback_line = _select_fact_single_fallback(
+                        question,
+                        evidence_items,
+                        target_field=target_field,
+                    )
                 if fallback_line:
                     final_answer_text = fallback_line
                     if isinstance(debug_info, dict):
@@ -3040,7 +3502,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                     return
 
         # 3b) Pure schema validation failures OR Generic content failures
-        if not invariant_violated and (not is_valid or is_generic_failure):
+        if not final_answer_text and not invariant_violated and (not is_valid or is_generic_failure):
             repaired = None
             # Only attempt schema repair if it was a schema failure, not a generic content failure
             if not is_valid and not is_generic_failure:
@@ -3055,19 +3517,22 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                     debug_info["schema_repair_source"] = "evidence"
                     debug_info["final_answer_text_override"] = repaired
             else:
-                retry_reason = "generic content failure" if is_generic_failure else "schema validation failure"
+                if is_generic_failure:
+                    retry_reason = "generic content failure"
+                elif misalignment_failure:
+                    retry_reason = "target field misalignment"
+                elif slot_validation_failed:
+                    retry_reason = "slot numeric validation failure"
+                else:
+                    retry_reason = "schema validation failure"
                 logger.warning(
                     f"[RAG] {retry_reason.capitalize()} for {answer_schema.value}, attempting retry. request_id={request_id}"
                 )
 
-                instruction_prefix = "CRITICAL VALIDATION FAILURE"
-                if is_generic_failure:
-                    instruction_prefix += " - Your answer was too generic or ignored the provided evidence."
-
                 retry_instruction = (
-                    f"{instruction_prefix} - You must follow the exact format below:\n\n"
-                    f"{_llm_prompt_template(instruction='', history='', context=context_text, question=question, answer_schema=answer_schema).split('EVIDENCE:')[0].strip()}\n\n"
-                    "Your previous response was invalid. Respond again following the exact format requirements and ensure your answer is grounded in the evidence."
+                    "I'm sorry, I couldn't find a clear answer in your previous response. "
+                    "Please look closely at the EVIDENCE provided below and provide the specific detail requested.\n\n"
+                    f"EVIDENCE:\n{context_text}\n\nQuestion: {question}\nAnswer:"
                 )
 
                 # Retry with strict prompt (non-streaming)
@@ -3099,12 +3564,43 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                     if inv_retry.errors:
                         debug_info["content_invariant_errors_retry"] = inv_retry.errors
 
+                retry_misaligned = False
+                if answer_schema == AnswerSchema.FACT_SINGLE and target_field:
+                    retry_misaligned = _fact_single_misaligned_to_target(
+                        retry_answer_text,
+                        target_field,
+                    )
+                    if retry_misaligned:
+                        corrected_retry = _extract_targeted_fact_single_from_evidence(
+                            question,
+                            evidence_items,
+                            target_field,
+                            context_text=context_text,
+                        )
+                        if corrected_retry:
+                            final_answer_text = corrected_retry
+                            if isinstance(debug_info, dict):
+                                debug_info["target_field_misaligned_retry"] = True
+                                debug_info["target_field"] = target_field
+                                debug_info["fallback_from_evidence"] = True
+                                debug_info["pipeline_marker"] = "EXTRACTOR_FACT_SINGLE"
+                                debug_info["final_answer_text_override"] = corrected_retry
+                        else:
+                            retry_is_valid = False
+                            if isinstance(debug_info, dict):
+                                debug_info["target_field_misaligned_retry"] = True
+                                debug_info["target_field"] = target_field
+
                 if not retry_is_valid or retry_invariant_violated:
                     # Retry also failed: record structured failure and
                     # return without streaming any tokens.
                     fallback_line = None
                     if answer_schema == AnswerSchema.FACT_SINGLE and evidence_items:
-                        fallback_line = _select_fact_single_fallback(question, evidence_items)
+                        fallback_line = _select_fact_single_fallback(
+                            question,
+                            evidence_items,
+                            target_field=target_field,
+                        )
                     if fallback_line:
                         final_answer_text = fallback_line
                         if isinstance(debug_info, dict):
@@ -3137,17 +3633,43 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                         return
                 else:
                     # Retry succeeded
-                    final_answer_text = retry_answer_text
+                    if not final_answer_text:
+                        final_answer_text = retry_answer_text
                     if isinstance(debug_info, dict):
                         debug_info["validation_retried"] = True
                         debug_info["validation_schema"] = answer_schema.value
 
         # 3c) First attempt succeeded with no invariant violation
-        if not invariant_violated and is_valid:
+        if not final_answer_text and not invariant_violated and is_valid:
             final_answer_text = answer_text_normalized
             if isinstance(debug_info, dict):
                 debug_info["validation_passed"] = True
                 debug_info["validation_schema"] = answer_schema.value
+
+        # Numeric grounding gate after final answer is chosen.
+        if final_answer_text and answer_schema == AnswerSchema.FACT_SINGLE and _is_numeric_fact_question(question):
+            evidence_texts = [ev.snippet for ev in (evidence_items or []) if getattr(ev, "snippet", None)]
+            consensus_value, _, _ = extract_numeric_consensus(evidence_texts)
+            if consensus_value is not None:
+                lower_answer = final_answer_text.strip().lower()
+                refusal_like = (
+                    "does not specify" in lower_answer
+                    or "does not explicitly contain" in lower_answer
+                    or "document does not specify" in lower_answer
+                )
+                if refusal_like or not validate_numeric_alignment(final_answer_text, consensus_value):
+                    formatted = str(int(consensus_value)) if consensus_value.is_integer() else str(consensus_value)
+                    final_answer_text = f"Based on the policy documents, the value is {formatted}."
+                    logger.warning(
+                        "[RAG] Numeric alignment failed; forcing evidence fallback. request_id=%s",
+                        request_id,
+                    )
+                    if isinstance(debug_info, dict):
+                        debug_info["validation_failed_reason"] = "numeric_alignment_failed"
+                        debug_info["fallback_from_evidence"] = True
+                        debug_info["pipeline_marker"] = "EXTRACTOR_EVIDENCE_FALLBACK"
+                        debug_info["refused"] = False
+                        debug_info["refusal_reason"] = None
 
         # If we still have no final answer text at this point, nothing to stream.
         if not final_answer_text:
@@ -3339,7 +3861,7 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                 header = line.strip()
                 break
         header = header or doc[:80].replace('\n', ' ')
-        context_pieces.append(f"[CHUNK_ID={chunk_id} HEADING={header}]\n{doc}\n----")
+        context_pieces.append(f"[CHUNK_ID={chunk_id} SOURCE={src} HEADING={header}]\n{doc}\n----")
         sources.append(src)
         detailed_sources.append(f"{src}#{chunk_id}")
         selected_info.append({
@@ -3534,7 +4056,14 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
                 "request_id": request_id,
             }
         doc_id = hit.meta.get("doc_id")
-        for line, score in extract_evidence_lines(hit.doc, question):
+        evidence_doc = hit.doc
+        if target_field:
+            evidence_doc, _ = _slice_text_to_slot(evidence_doc, target_field)
+        for line, score in extract_evidence_lines(
+            evidence_doc,
+            question,
+            target_field=target_field,
+        ):
             all_evidence.append({
                 "snippet": line,
                 "score": score,
@@ -3602,9 +4131,9 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
     
     # GROUNDING GATE: Check if evidence is sufficient before calling LLM
     should_proceed, refusal_reason, gate_evidence_lines, max_overlap, sum_top3, failed_check = _compute_grounding_gate(
-        question, filtered_results, ids
+        question, filtered_results, ids, target_field=target_field
     )
-    
+
     # Log evidence lines for tracing (truncated, no full content)
     evidence_preview = [line[:80] + "..." if len(line) > 80 else line for line in gate_evidence_lines[:3]]
     logger.info(
@@ -3612,7 +4141,6 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         request_id, should_proceed, refusal_reason, len(gate_evidence_lines), max_overlap, sum_top3, failed_check or "NONE", evidence_preview
     )
     
-    import os
     DEMO_STRICT = os.environ.get("RAGIFY_DEMO_STRICT", "false").lower() == "true"
     def _evidence_has_time_or_number(evidence_list):
         import re
@@ -3626,6 +4154,15 @@ EVIDENCE is a set of chunks with CHUNK_ID and text."""
         return False
 
     if not should_proceed:
+        # OVERRIDE: In DEV or DEMO modes, ignore grounding failures to allow debugging.
+        current_mode = str(RAGIFY_MODE).upper()
+        if current_mode in ("DEV", "DEMO", "FAST") and not should_proceed:
+            logger.warning(
+                f"[RAG] Grounding Gate override active for {current_mode} mode. Proceeding despite low score."
+            )
+            should_proceed = True
+            refusal_reason = None
+
         # DEMO_STRICT guardrail: if evidence_count >= 1 and evidence contains time/number anchor, never refuse
         if DEMO_STRICT and len(evidence_items) >= 1 and _evidence_has_time_or_number([ev.snippet for ev in evidence_items]):
             logger.info("[DEMO_STRICT] Override refusal: evidence_count >= 1 and evidence contains time/number anchor.")

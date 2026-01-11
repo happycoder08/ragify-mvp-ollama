@@ -1,0 +1,17 @@
+[
+  {
+    "question": "How many sick days do full-time employees receive per year?",
+    "expected_answer": "10",
+    "expected_source_filename": "Benefits_Policy_2025.txt"
+  },
+  {
+    "question": "How many vacation days do I get?",
+    "expected_answer": "15",
+    "expected_source_filename": "Benefits_Policy_2025.txt"
+  },
+  {
+    "question": "What's the dress code?",
+    "expected_answer": "Business casual",
+    "expected_source_filename": "01_Employee_Handbook.txt"
+  }
+]

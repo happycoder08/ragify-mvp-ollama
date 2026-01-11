@@ -5,10 +5,6 @@ from typing import Dict, Any
 # RAGIFY MODE CONFIGURATION
 # ===========================
 # Set via env var: RAGIFY_MODE=dev|demo|prod
-# - dev: Full features, verbose logging, no limits
-# - demo: Fast responses, safe defaults, limited context
-# - prod: Balanced performance, security, monitoring
-
 RAGIFY_MODE = os.getenv("RAGIFY_MODE", "demo").lower()
 
 # ===========================
@@ -19,111 +15,109 @@ class ModeConfig:
     """Configuration presets for different RAGIFY modes."""
     
     DEV = {
-        # LLM Settings
-        "default_mode": "full",  # Query mode: fast or full
-        "max_tokens_fast": None,  # Unlimited for dev testing
-        "max_tokens_full": None,
-        "top_k_fast": 3,
-        "top_k_full": 6,
+        "mode": "dev",
+        "default_mode": "full",
+        "debug": True,
         
-        # Retrieval Settings
-        "similarity_threshold": 400,  # More lenient for testing
-        "chunk_size": 800,
-        "chunk_overlap": 200,
-        
-        # Performance Settings
-        "request_timeout": 600,  # 10 min for slow models
-        "embedding_batch_size": 10,
-        
-        # Provider Settings
+        # LLM & Embedding
         "llm_provider": "ollama",
         "llm_model": "llama3.2:1b",
+        "embedding_provider": "ollama",
         "embedding_model": "nomic-embed-text",
         
-        # Reranker Settings
-        "reranker_provider": "none",  # none, jina, cohere
-        "reranker_top_n": None,  # None = use all retrieved docs
-        "enable_reranking": False,  # Disable in dev for speed
+        # Performance
+        "request_timeout": 600,
+        "embedding_batch_size": 10,
+        "max_tokens_fast": None,
+        "max_tokens_full": None,
         
-        # Conversation Settings
-        "max_conversation_turns": 10,  # Max messages to include in context (5 user + 5 assistant)
+        # Retrieval
+        "top_k_fast": 3,
+        "top_k_full": 3,
+        "similarity_threshold": 400,
+        "chunk_size": 800,
+        "chunk_overlap": 200,
+        "context_budget_chars": 3000,
         
-        # Logging
+        # Reranking
+        "reranker_provider": "none",
+        "reranker_top_n": None,
+        "enable_reranking": False,
+        
+        # App Logic
+        "max_conversation_turns": 10,
         "log_level": "DEBUG",
         "enable_timing_logs": True,
     }
     
     DEMO = {
-        # LLM Settings - optimized for speed
-        "default_mode": "fast",
-        "max_tokens_fast": 100,  # Reasonable answers (was 50 "tweet mode")
-        "max_tokens_full": 150,
-        "top_k_fast": 20,  # Retrieve 20 chunks for hybrid reranking
-        "top_k_full": 15,  # Retrieve 15 chunks for full search
-        "top_n_fast": 5,   # Use top 5 chunks for LLM context after hybrid rerank
-        "top_n_full": 8,
+        "mode": "demo",
+        "default_mode": "demo",  # Critical fix for KeyError
+        "debug": True,
         
-        # Retrieval Settings - more lenient for better recall
-        "similarity_threshold": 400,  # Skipped for document-scoped queries, hybrid reranking used instead
-        "chunk_size": 300,  # Smaller chunks = more focused content (was 800)
-        "chunk_overlap": 50,  # Smaller overlap for smaller chunks (was 200)
-        
-        # Performance Settings - fast responses
-        "request_timeout": 300,  # 5 min max
-        "embedding_batch_size": 10,
-        
-        # Provider Settings - fastest local model
+        # LLM & Embedding
         "llm_provider": "ollama",
         "llm_model": "llama3.2:1b",
+        "embedding_provider": "ollama",
         "embedding_model": "nomic-embed-text",
         
-        # Reranker Settings - better filtering after retrieval
-        "reranker_provider": "none",  # none, jina, cohere
-        "reranker_top_n": 8,  # Keep top 8 chunks for LLM context (retain location+time together)
-        "enable_reranking": False,  # False = free lexical+semantic hybrid reranking
+        # Performance & Data Diet (Optimized for Local 8B Model)
+        "request_timeout": 120,
+        "embedding_batch_size": 1,
+        "max_tokens_fast": 150,
+        "max_tokens_full": 500,
         
-        # Context Budget
-        "context_budget_chars": 12000,  # Cap context at 12k chars (~3k tokens)
+        # Retrieval (Lightweight)
+        "top_k_fast": 2,
+        "top_k_full": 2,
+        "similarity_threshold": 0.3,
+        "chunk_size": 1000,
+        "chunk_overlap": 200,
+        "context_budget_chars": 1500,  # Strict budget to fix 90s latency
         
-        # Conversation Settings
-        "max_conversation_turns": 6,  # Last 6 messages (3 user + 3 assistant)
+        # Reranking
+        "reranker_provider": "none",
+        "reranker_top_n": 2,
+        "enable_reranking": False,
         
-        # Logging
+        # App Logic
+        "max_conversation_turns": 5,
         "log_level": "INFO",
         "enable_timing_logs": True,
     }
     
     PROD = {
-        # LLM Settings - balanced quality/speed
+        "mode": "prod",
         "default_mode": "full",
+        "debug": False,
+        
+        # LLM & Embedding
+        "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
+        "llm_model": os.getenv("LLM_MODEL", "llama3.1:8b"),
+        "embedding_provider": "ollama",
+        "embedding_model": "nomic-embed-text",
+        
+        # Performance
+        "request_timeout": 300,
+        "embedding_batch_size": 10,
         "max_tokens_fast": 100,
         "max_tokens_full": 500,
+        
+        # Retrieval
         "top_k_fast": 3,
         "top_k_full": 5,
-        
-        # Retrieval Settings - balanced relevance
         "similarity_threshold": 350,
         "chunk_size": 800,
         "chunk_overlap": 200,
+        "context_budget_chars": 4000,
         
-        # Performance Settings
-        "request_timeout": 300,
-        "embedding_batch_size": 10,
-        
-        # Provider Settings - production ready
-        "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
-        "llm_model": os.getenv("LLM_MODEL", "llama3.2:1b"),
-        "embedding_model": "nomic-embed-text",
-        
-        # Reranker Settings
+        # Reranking
         "reranker_provider": os.getenv("RERANKER_PROVIDER", "none"),
-        "reranker_top_n": 3,  # Keep top 3 after reranking
-        "enable_reranking": True,  # Enable for better accuracy in prod
+        "reranker_top_n": 3,
+        "enable_reranking": True,
         
-        # Conversation Settings
-        "max_conversation_turns": 8,  # Last 8 messages (4 user + 4 assistant)
-        
-        # Logging
+        # App Logic
+        "max_conversation_turns": 8,
         "log_level": "INFO",
         "enable_timing_logs": True,
     }
@@ -137,7 +131,7 @@ class ModeConfig:
             "demo": cls.DEMO,
             "prod": cls.PROD,
         }
-        return configs.get(mode, cls.DEMO)  # Default to demo if invalid mode
+        return configs.get(mode, cls.DEMO)
 
 
 # ===========================
@@ -165,7 +159,7 @@ EMBEDDING_MODEL = CONFIG["embedding_model"]
 RERANKER_PROVIDER = CONFIG["reranker_provider"]
 RERANKER_TOP_N = CONFIG["reranker_top_n"]
 ENABLE_RERANKING = CONFIG["enable_reranking"]
-CONTEXT_BUDGET_CHARS = CONFIG.get("context_budget_chars", None)  # Optional context char limit
+CONTEXT_BUDGET_CHARS = CONFIG.get("context_budget_chars", None)
 MAX_CONVERSATION_TURNS = CONFIG["max_conversation_turns"]
 LOG_LEVEL = CONFIG["log_level"]
 ENABLE_TIMING_LOGS = CONFIG["enable_timing_logs"]
@@ -194,15 +188,8 @@ def get_config_summary() -> Dict[str, Any]:
         "max_tokens_full": MAX_TOKENS_FULL,
         "top_k_fast": TOP_K_FAST,
         "top_k_full": TOP_K_FULL,
-        "top_n_fast": TOP_N_FAST,
-        "top_n_full": TOP_N_FULL,
-        "similarity_threshold": SIMILARITY_THRESHOLD,
+        "context_budget_chars": CONTEXT_BUDGET_CHARS,
         "request_timeout": REQUEST_TIMEOUT,
         "llm_provider": LLM_PROVIDER,
-        "llm_model": LLM_MODEL,
-        "reranker_provider": RERANKER_PROVIDER,
-        "reranker_top_n": RERANKER_TOP_N,
-        "enable_reranking": ENABLE_RERANKING,
-        "context_budget_chars": CONTEXT_BUDGET_CHARS,
         "log_level": LOG_LEVEL,
     }

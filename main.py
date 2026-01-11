@@ -103,6 +103,7 @@ logging.basicConfig(
 import time
 import json
 import asyncio
+import re
 
 from app.services import ingestion
 from app.services import rag_service
@@ -191,6 +192,79 @@ def _resolve_clarification_question(clarification_data, fallback_question: str) 
     return question
 
 
+def _should_use_fact_single_fallback(question: str) -> bool:
+    if re.search(r"\b20\d{2}\b", question or ""):
+        return True
+    lowered = (question or "").lower()
+    return "vacation" in lowered or "days" in lowered
+
+
+def _extract_conservative_fact_single_from_evidence(
+    question: str,
+    evidence_items: List[EvidenceItem],
+) -> Optional[str]:
+    if not evidence_items:
+        return None
+
+    year_matches = re.findall(r"\b20\d{2}\b", question or "")
+    years = set(year_matches)
+    if years:
+        filtered = [
+            ev for ev in evidence_items
+            if any(y in (getattr(ev, "heading", "") or "") for y in years)
+            or any(y in (getattr(ev, "snippet", "") or "") for y in years)
+        ]
+        if filtered:
+            evidence_items = filtered
+
+    tokens = re.findall(r"[a-z0-9]+", (question or "").lower())
+    stop_words = {
+        "the", "a", "an", "and", "or", "but", "if", "to", "of", "in", "on", "for",
+        "with", "at", "by", "from", "up", "as", "is", "are", "was", "were", "be",
+        "been", "being", "this", "that", "these", "those", "it", "its", "how",
+        "many", "what", "when", "where", "which", "who", "whom", "why", "do",
+        "does", "did", "can", "could", "should", "would", "may", "might", "will",
+        "shall", "per", "year", "years",
+    }
+    key_terms = [t for t in tokens if len(t) >= 3 and t not in stop_words]
+    number_pattern = re.compile(r"\b\d+(?:\.\d+)?\b")
+    vacation_pattern = re.compile(r"\bvacation\b", re.IGNORECASE)
+    days_pattern = re.compile(r"\bdays?\b", re.IGNORECASE)
+
+    for ev in evidence_items:
+        snippet = getattr(ev, "snippet", "") or ""
+        lines = [line.strip() for line in snippet.splitlines()]
+        for idx, line in enumerate(lines):
+            if not line:
+                continue
+            if line.strip().lower() == "vacation":
+                for follow in lines[idx + 1:]:
+                    if not follow:
+                        continue
+                    if vacation_pattern.search(follow) and number_pattern.search(follow):
+                        return re.split(r"(?<=[.!?])\s+", follow.strip())[0].strip()
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            for candidate in re.split(r"(?<=[.!?])\s+", line):
+                candidate = candidate.strip()
+                if not candidate:
+                    continue
+                if not number_pattern.search(candidate):
+                    continue
+                lower_candidate = candidate.lower()
+                if vacation_pattern.search(candidate) and number_pattern.search(candidate):
+                    return candidate
+                if (vacation_pattern.search(candidate) or days_pattern.search(candidate)) and number_pattern.search(candidate):
+                    if key_terms and not any(term in lower_candidate for term in key_terms):
+                        continue
+                    return candidate
+
+    return None
+
+
 def _apply_empty_answer_invariant(
     *,
     full_answer: str,
@@ -212,16 +286,54 @@ def _apply_empty_answer_invariant(
     if debug_enabled and debug_info is not None:
         debug_info.empty_answer_invariant_tripped = True
 
-    fallback_marker = "EXTRACTOR_FACT_SINGLE"
     answer_schema = getattr(decision, "answer_schema", None)
-    if answer_schema == AnswerSchema.FACT_SINGLE and evidence:
-        fallback_answer = _select_fact_single_fallback(
-            question,
-            evidence,
-        ) or _construct_schema_correct_answer_from_evidence(
-            AnswerSchema.FACT_SINGLE,
-            evidence,
-        )
+    if evidence:
+        fallback_answer = None
+        fallback_marker = "EXTRACTOR_EVIDENCE_FALLBACK"
+        if answer_schema == AnswerSchema.FACT_SINGLE:
+            fallback_marker = "EXTRACTOR_FACT_SINGLE"
+            fallback_answer = _select_fact_single_fallback(
+                question,
+                evidence,
+            ) or _construct_schema_correct_answer_from_evidence(
+                AnswerSchema.FACT_SINGLE,
+                evidence,
+            )
+        elif answer_schema is None:
+            fallback_marker = "EXTRACTOR_FACT_SINGLE"
+            fallback_answer = _extract_conservative_fact_single_from_evidence(
+                question,
+                evidence,
+            ) or _construct_schema_correct_answer_from_evidence(
+                AnswerSchema.FACT_SINGLE,
+                evidence,
+            )
+        else:
+            if _should_use_fact_single_fallback(question):
+                fallback_marker = "EXTRACTOR_FACT_SINGLE"
+                fallback_answer = _extract_conservative_fact_single_from_evidence(
+                    question,
+                    evidence,
+                ) or _construct_schema_correct_answer_from_evidence(
+                    AnswerSchema.FACT_SINGLE,
+                    evidence,
+                )
+            else:
+                fallback_answer = _construct_schema_correct_answer_from_evidence(
+                    answer_schema,
+                    evidence,
+                )
+
+        if not fallback_answer:
+            fallback_marker = "EXTRACTOR_FACT_SINGLE"
+            fallback_answer = _select_fact_single_fallback(
+                question,
+                evidence,
+            ) or _construct_schema_correct_answer_from_evidence(
+                AnswerSchema.FACT_SINGLE,
+                evidence,
+            )
+
         if fallback_answer:
             if debug_enabled and debug_info is not None:
                 debug_info.fallback_from_evidence = True
@@ -1147,11 +1259,19 @@ async def query(
             for chunk in retrieved_chunks_top20[:10]
         ]
         
-        # selected_chunk_ids: list of chunk_ids used to build context
-        debug_info_dict["selected_chunk_ids"] = debug_payload.get("selected_chunk_ids", []) if isinstance(debug_payload, dict) else []
-        
-        # selected_headings: list of headings used
-        debug_info_dict["selected_headings"] = debug_payload.get("selected_headings", []) if isinstance(debug_payload, dict) else []
+        # selected_chunk_ids / selected_headings: align to selected_chunks when present
+        selected_chunks_debug = debug_payload.get("selected_chunks") if isinstance(debug_payload, dict) else None
+        if isinstance(selected_chunks_debug, list) and selected_chunks_debug:
+            debug_info_dict["selected_chunk_ids"] = [
+                c.get("chunk_id") for c in selected_chunks_debug if c.get("chunk_id")
+            ]
+            debug_info_dict["selected_headings"] = [
+                c.get("header_first_line") or c.get("header") or ""
+                for c in selected_chunks_debug
+            ]
+        else:
+            debug_info_dict["selected_chunk_ids"] = debug_payload.get("selected_chunk_ids", []) if isinstance(debug_payload, dict) else []
+            debug_info_dict["selected_headings"] = debug_payload.get("selected_headings", []) if isinstance(debug_payload, dict) else []
         
         # context_chunks_count: number of chunks concatenated
         debug_info_dict["context_chunks_count"] = debug_payload.get("selected_count", 0) if isinstance(debug_payload, dict) else 0
@@ -1352,12 +1472,15 @@ async def query(
         first_token = True
         token_count = 0
         full_answer = ""  # Collect full answer for saving to conversation
-        logger.info("Starting to stream response for request_id=%s (evidence_count=%d)", request_id, len(evidence))
+        evidence_items = evidence
+        sources_list = sources
+        pipeline_marker_local = pipeline_marker
+        logger.info("Starting to stream response for request_id=%s (evidence_count=%d)", request_id, len(evidence_items))
         yield f"event: debug\n"
         yield f"data: {json.dumps(debug_info.dict(exclude_none=True))}\n\n"
 
         # Handle CLARIFICATION_REQUIRED in stream
-        if pipeline_marker == "CLARIFICATION_REQUIRED":
+        if pipeline_marker_local == "CLARIFICATION_REQUIRED":
             # Do not stream tokens for clarification, just emit final
             clarification_data = debug_payload.get("clarification") if isinstance(debug_payload, dict) else None
             from app.schemas.query import build_clarification
@@ -1398,14 +1521,14 @@ async def query(
         # Debug log for streaming final answer
         logger.info(f"FINAL_ANSWER request_id={request_id} answer_len={len(full_answer)} preview={full_answer[:200]}")
 
-        full_answer, is_refused, empty_refusal_reason, evidence, sources, pipeline_marker = _apply_empty_answer_invariant(
+        full_answer, is_refused, empty_refusal_reason, evidence_items, sources_list, pipeline_marker_local = _apply_empty_answer_invariant(
             full_answer=full_answer,
             is_refused=is_refused,
-            pipeline_marker=pipeline_marker,
+            pipeline_marker=pipeline_marker_local,
             decision=decision,
             question=payload.question,
-            evidence=evidence,
-            sources=sources,
+            evidence=evidence_items,
+            sources=sources_list,
             debug_info=debug_info if payload.debug >= 1 else None,
             debug_enabled=payload.debug >= 1,
         )
@@ -1421,7 +1544,7 @@ async def query(
                 refusal_reason=refusal_reason,
                 evidence=[],
                 sources=[],
-                pipeline_marker=pipeline_marker,
+                pipeline_marker=pipeline_marker_local,
                 debug_info=debug_info if payload.debug >= 1 else None
             )
             yield f"event: final\n"
@@ -1429,7 +1552,7 @@ async def query(
             return
 
         source_items = []
-        for src in (sources or []):
+        for src in (sources_list or []):
             if "#" in src:
                 filename, chunk_id = src.split("#", 1)
                 source_items.append(SourceItem(
@@ -1456,9 +1579,9 @@ async def query(
             answer=full_answer,
             refused=False,
             refusal_reason=None,
-            evidence=evidence,
+            evidence=evidence_items,
             sources=source_items,
-            pipeline_marker=pipeline_marker,
+            pipeline_marker=pipeline_marker_local,
             debug_info=debug_info if payload.debug >= 1 else None
         )
         logger.info("Sending final structured response for request_id=%s", request_id)

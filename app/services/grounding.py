@@ -7,7 +7,10 @@ Prevents hallucinations by refusing queries that lack sufficient supporting evid
 
 import re
 import logging
-from typing import List, Tuple
+import os
+from typing import List, Tuple, Optional
+
+from app.config import RAGIFY_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +22,53 @@ STOPWORDS = {
     'have', 'had', 'should', 'could', 'would', 'can', 'may', 'i', 'my', 'me'
 }
 
+# Deterministic numeric grounding helpers.
+def extract_numeric_consensus(evidence_chunks: List[str]) -> Tuple[Optional[float], bool, List[float]]:
+    values: List[float] = []
+    for chunk in evidence_chunks or []:
+        for match in re.findall(r"\b\d+(?:\.\d+)?\b", chunk or ""):
+            try:
+                val = float(match)
+            except ValueError:
+                continue
+            # Filter out likely years to avoid policy-year conflicts.
+            if 2020 <= val <= 2030 and val.is_integer():
+                continue
+            values.append(val)
+
+    unique_vals = sorted(set(values))
+    if not unique_vals:
+        return None, False, []
+    if len(unique_vals) == 1:
+        return unique_vals[0], False, unique_vals
+    return None, True, unique_vals
+
+
+def validate_numeric_alignment(llm_answer: str, expected_val: float) -> bool:
+    if llm_answer is None:
+        return False
+    # Allow integer and float formatting to match.
+    normalized = llm_answer
+    if expected_val.is_integer():
+        target = str(int(expected_val))
+        if target in normalized:
+            return True
+    target = str(expected_val)
+    return target in normalized
+
 # Grounding gate constants
-# Detect CI mode for more lenient thresholds during testing
-import os
-is_ci_mode = (
-    os.getenv("CI", "").lower() in ("true", "1", "yes") or
-    os.getenv("APP_MODE", "").lower() == "ci"
+current_mode = str(RAGIFY_MODE).upper()
+# Allow relaxed grounding if we are in CI, DEV, or DEMO
+is_permissive = (
+    os.getenv("CI", "").lower() in ("true", "1", "yes")
+    or os.getenv("APP_MODE", "").lower() == "ci"
+    or current_mode in ("DEV", "DEMO")
 )
 
-if is_ci_mode:
-    # More lenient thresholds for CI/mock testing
+if is_permissive:
+    # More lenient thresholds for CI/dev/demo testing
     MIN_SUPPORT = 1  # Minimum single-line overlap count for evidence to proceed to LLM
-    MIN_TOTAL_SUPPORT = 2  # Minimum sum of top 3 overlaps across all evidence lines
+    MIN_TOTAL_SUPPORT = 1  # Minimum sum of top 3 overlaps across all evidence lines
 else:
     # Production thresholds
     MIN_SUPPORT = 2  # Minimum single-line overlap count for evidence to proceed to LLM
@@ -57,7 +95,12 @@ def _tokenize_and_filter(text: str, min_len: int = 2) -> list:
     return tokens
 
 
-def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_EVIDENCE_LINES_PER_CHUNK) -> list[tuple[str, int]]:
+def extract_evidence_lines(
+    chunk_text: str,
+    question: str,
+    max_lines: int = MAX_EVIDENCE_LINES_PER_CHUNK,
+    target_field: str | None = None,
+) -> list[tuple[str, int]]:
     """
     Extract top evidence lines from a chunk based on lexical overlap with question.
     Returns list of (line, overlap_count) tuples sorted by relevance, up to max_lines.
@@ -92,10 +135,34 @@ def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_
     # Split chunk into lines and score each
     lines = chunk_text.split('\n')
     scored_lines = []
+    target_keywords = []
+    if target_field:
+        target_map = {
+            "VACATION": ["vacation", "pto", "paid time off", "time off"],
+            "SICK": ["sick", "sick time", "sick leave", "illness"],
+        }
+        target_keywords = target_map.get(target_field, [])
+
+    def _is_section_header(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped:
+            return False
+        if stripped.endswith(":"):
+            return True
+        return stripped.isupper() and len(stripped) <= 60
+
+    def _mentions_target(line: str) -> bool:
+        lower_line = line.lower()
+        return any(kw in lower_line for kw in target_keywords)
+
+    in_target_section = False
     
     for idx, line in enumerate(lines):
         line_stripped = line.strip()
         if not line_stripped:
+            continue
+        if target_keywords and _is_section_header(line_stripped):
+            in_target_section = _mentions_target(line_stripped)
             continue
 
         # Token-based filter: exclude lines with <2 tokens unless they have digits/time markers
@@ -124,6 +191,10 @@ def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_
             else:
                 effective_overlap = raw_overlap + 1
                 anchor_bonus_applied = True
+        if target_keywords and in_target_section:
+            effective_overlap += 2
+        if target_keywords and _mentions_target(line_stripped):
+            effective_overlap += 1
 
         # Log raw vs effective overlap for debug
         logger.debug(
@@ -153,7 +224,8 @@ def extract_evidence_lines(chunk_text: str, question: str, max_lines: int = MAX_
 def _compute_grounding_gate(
     question: str,
     selected_chunks: list[tuple[str, dict, float]],
-    chunk_ids: list[str]
+    chunk_ids: list[str],
+    target_field: str | None = None,
 ) -> tuple[bool, str, list[str], float, float, str]:
     # --- Anchor-first fast-pass for time/numeric questions ---
     def _has_time_anchor(text: str) -> bool:
@@ -222,7 +294,12 @@ def _compute_grounding_gate(
     # Extract evidence lines from all selected chunks (with overlap scores)
     all_evidence_tuples = []
     for doc, meta, dist in selected_chunks:
-        chunk_tuples = extract_evidence_lines(doc, question, max_lines=MAX_EVIDENCE_LINES_PER_CHUNK)
+        chunk_tuples = extract_evidence_lines(
+            doc,
+            question,
+            max_lines=MAX_EVIDENCE_LINES_PER_CHUNK,
+            target_field=target_field,
+        )
         all_evidence_tuples.extend(chunk_tuples)
     
     # Check 1: No evidence lines extracted

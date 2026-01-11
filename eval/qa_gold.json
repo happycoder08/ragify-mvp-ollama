@@ -118,5 +118,37 @@
     "keywords": ["1500", "$1,500", "learning budget", "conference"],
     "required_keywords": ["1500"],
     "category": "professional_development"
+  },
+  {
+    "id": 16,
+    "question": "How many sick days do full-time employees receive per year?",
+    "expected_answer": "Full-time employees receive 10 sick days per calendar year.",
+    "keywords": ["10", "sick", "days", "per year"],
+    "required_keywords": ["10", "sick"],
+    "category": "benefits_time_off"
+  },
+  {
+    "id": 17,
+    "question": "How many vacation days are there in 2025?",
+    "expected_answer": "Full-time employees receive 15 vacation days per calendar year.",
+    "keywords": ["15", "vacation", "2025"],
+    "required_keywords": ["15", "vacation"],
+    "category": "benefits_time_off"
+  },
+  {
+    "id": 18,
+    "question": "How many vacation days are there in 2026?",
+    "expected_answer": "Full-time employees receive 20 vacation days per calendar year.",
+    "keywords": ["20", "vacation", "2026"],
+    "required_keywords": ["20", "vacation"],
+    "category": "benefits_time_off"
+  },
+  {
+    "id": 19,
+    "question": "How many vacation days do full-time employees receive per year?",
+    "expected_answer": "Which policy year are you referring to?",
+    "keywords": ["which", "year", "2025", "2026"],
+    "required_keywords": ["which", "year"],
+    "category": "benefits_time_off"
   }
 ]

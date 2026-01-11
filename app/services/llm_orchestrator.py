@@ -6,6 +6,7 @@ Provides a clean abstraction for LLM interaction with post-generation validation
 """
 
 import time
+import re
 import logging
 from typing import AsyncGenerator, Callable, Optional
 
@@ -70,6 +71,14 @@ async def generate_answer_stream(
     t_llm = time.time()
     first_token_logged = False
     
+    def _strip_technical_markers(text: str) -> str:
+        if not text:
+            return text
+        cleaned = re.sub(r"\bCHUNK_ID\b\s*=?\s*\S*", "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bVALIDATION_FAILED\b|\bVALIDATION\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned
+
     def on_first_token(duration: float):
         """Callback when first token arrives."""
         nonlocal first_token_logged
@@ -115,7 +124,9 @@ async def generate_answer_stream(
                 full_answer = refusal_text
             else:
                 logger.info("[%s] Answer validation PASSED", request_id or "no-request-id")
-            
+
+            full_answer = _strip_technical_markers(full_answer)
+
             # Stream the (validated) answer in chunks to simulate streaming
             for i in range(0, len(full_answer), chunk_size):
                 chunk = full_answer[i:i+chunk_size]

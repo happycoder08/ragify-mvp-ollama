@@ -353,6 +353,8 @@ RAGify centralizes most tuning in `RAGIFY_MODE` (see [CONFIG_GUIDE.md](CONFIG_GU
 
 You can inspect the active config at runtime via `GET /api/system/config`, and still override specific settings with env vars (for example `LLM_PROVIDER`, `LLM_MODEL`, or `RAGIFY_OLLAMA_TIMEOUT`).
 
+For a concise, up-to-date summary of each mode, usage examples, and best practices, see [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
+
 ### LLM Provider Options
 
 RAGify supports multiple LLM backends via the `LLM_PROVIDER` environment variable:
