@@ -396,6 +396,8 @@ def _is_numeric_fact_question(question: str) -> bool:
     if not question:
         return False
     q_lower = question.lower()
+    if re.search(r"\be-\d+\b", q_lower):
+        return False
     if re.search(r"\b\d+\b", q_lower):
         return True
     return any(term in q_lower for term in ["how many", "days", "per year", "per week", "per month"])
@@ -544,6 +546,23 @@ def _extract_targeted_fact_single_from_evidence(
         if extracted:
             return extracted
 
+    return None
+
+def _extract_error_code_line(
+    evidence_items: List[Any],
+    error_code: str,
+) -> Optional[str]:
+    if not evidence_items or not error_code:
+        return None
+    code_upper = error_code.upper()
+    for ev in evidence_items:
+        snippet = getattr(ev, "snippet", "") or ""
+        for raw_line in snippet.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if code_upper in line.upper():
+                return line
     return None
 
 def _fingerprint_chunk(text: str) -> str:
@@ -1455,36 +1474,47 @@ def _detect_schema_from_text(response: str) -> Optional[AnswerSchema]:
 
 
 def validate_format_by_schema(response: str, schema: AnswerSchema) -> ValidationResult:
-    """Validate *format* of response against the given AnswerSchema."""
+    """Validate *format* of response against the given AnswerSchema.
 
-    normalized = (response or "").strip()
+    Includes smart cleaning to handle chatty LLM preambles.
+    """
+    raw = (response or "").strip()
+    normalized = raw
     errors: List[str] = []
 
+    # --- SMART CLEANING: Strip preambles before first valid list item ---
+    if schema == AnswerSchema.CHECKLIST_PROCEDURE:
+        match = re.search(r"(?m)^\s*1\.", raw)
+        if match:
+            normalized = raw[match.start():].strip()
+    elif schema == AnswerSchema.POLICY_EXCERPT:
+        match = re.search(r"(?m)^\s*-\s", raw)
+        if match:
+            normalized = raw[match.start():].strip()
+    elif schema == AnswerSchema.SUMMARY_OVERVIEW:
+        match = re.search(r"(?m)^\s*[-\*]\s", raw)
+        if match:
+            normalized = raw[match.start():].strip()
+
+    # --- VALIDATION LOGIC ---
     if schema == AnswerSchema.FACT_SINGLE:
         if not _validate_fact_single_response(normalized):
             errors.append("fact_single_invalid_format")
-
     elif schema == AnswerSchema.CHECKLIST_PROCEDURE:
         if not _validate_checklist_procedure_response(normalized):
             errors.append("checklist_procedure_invalid_format")
-
     elif schema == AnswerSchema.POLICY_EXCERPT:
         if not _validate_policy_excerpt_response(normalized):
             errors.append("policy_excerpt_invalid_format")
-
     elif schema == AnswerSchema.BOOLEAN_SPECIFIED:
         if not _validate_boolean_specified_response(normalized):
             errors.append("boolean_specified_invalid_format")
-
     elif schema == AnswerSchema.NOT_FOUND_EXPLICIT:
         if not _validate_not_found_explicit_response(normalized):
             errors.append("not_found_explicit_not_canonical")
-            
     elif schema == AnswerSchema.SUMMARY_OVERVIEW:
         if not _validate_summary_overview_response(normalized):
             errors.append("summary_overview_invalid")
-
-    # Unknown schema: treat as pass-through but still normalize.
 
     ok = len(errors) == 0
 
@@ -1526,6 +1556,18 @@ def validate_content_invariants(response: str, schema: AnswerSchema) -> Invarian
 
     if schema != AnswerSchema.NOT_FOUND_EXPLICIT and refusal_phrase in normalized:
         errors.append("refusal_phrase_in_non_not_found")
+    if schema != AnswerSchema.NOT_FOUND_EXPLICIT:
+        refusal_like_patterns = [
+            r"\bdoes not specify\b",
+            r"\bnot specified\b",
+            r"\bnot mentioned\b",
+            r"\bnot provided\b",
+            r"\bunable to find\b",
+            r"\bcannot find\b",
+            r"\bcan't find\b",
+        ]
+        if any(re.search(p, normalized, re.IGNORECASE) for p in refusal_like_patterns):
+            errors.append("refusal_like_phrase_in_non_not_found")
 
     ok = len(errors) == 0
     return InvariantResult(ok=ok, errors=errors)
@@ -1662,144 +1704,150 @@ def _construct_schema_correct_answer_from_evidence(
     evidence_items: List[Any],
 ) -> Optional[str]:
     """Best-effort schema-correct answer built directly from evidence.
-
-    This is used as a correction path when the LLM incorrectly emits the
-    canonical refusal phrase for non-NOT_FOUND_EXPLICIT schemas. It never
-    fabricates content: it only rearranges existing evidence snippets into
-    the expected schema formats.
+    
+    Refined to skip headers (ALL CAPS, ending in colon) and prefer content lines.
     """
     if not evidence_items:
         return None
 
     refusal_phrase = "The document does not specify this."
 
-    def _first_line(snippet: str) -> str:
-        for line in (snippet or "").splitlines():
+    def _get_best_content_line(snippet: str) -> str:
+        """Extract the first meaningful content line, skipping headers."""
+        if not snippet:
+            return ""
+        
+        lines = snippet.splitlines()
+        fallback_candidate = ""
+        
+        for line in lines:
             s = line.strip()
-            if s:
+            if not s:
+                continue
+            
+            # Skip Refusals
+            if refusal_phrase in s:
+                continue
+
+            # Skip likely headers/titles
+            # 1. All Caps and short (e.g. "HR POLICY MANUAL")
+            # 2. Ends with colon (e.g. "ERROR CODES:")
+            # 3. Explicit Title Keywords in short lines
+            is_header = (
+                (s.isupper() and len(s) < 100) or 
+                s.endswith(":") or 
+                (len(s) < 60 and any(t in s for t in ["GUIDE", "MANUAL", "POLICY", "STEPS"]))
+            )
+            
+            # Priority 1: List items (bullets or numbers)
+            # This is huge for the "Deployment Steps" and "Error Codes" questions
+            if re.match(r"^\d+\.", s) or s.startswith(("-", "*", "•")):
+                # FIX: If it is a numbered/bulleted item but ALL CAPS, treat it as a header (skip it)
+                if s.isupper() and len(s) < 80:
+                    continue
                 return s
-        return (snippet or "").strip()
+                
+            # Priority 2: Normal sentences (not headers, decent length)
+            if not is_header and len(s) > 20:
+                return s
+                
+            # Priority 3: Capture the first non-empty line just in case (as a fallback)
+            if not fallback_candidate:
+                fallback_candidate = s
+                
+        return fallback_candidate
+
+    def _get_content_lines(snippet: str) -> List[str]:
+        """Extract multiple content lines, skipping headers and refusals."""
+        if not snippet:
+            return []
+
+        lines: List[str] = []
+        for line in snippet.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if refusal_phrase in s:
+                continue
+
+            is_header = (
+                (s.isupper() and len(s) < 100)
+                or s.endswith(":")
+                or (len(s) < 60 and any(t in s for t in ["GUIDE", "MANUAL", "POLICY", "STEPS"]))
+            )
+
+            if re.match(r"^\d+\.", s) or s.startswith(("-", "*", "•")):
+                if s.isupper() and len(s) < 80:
+                    continue
+                lines.append(s)
+                continue
+
+            if not is_header and len(s) > 20:
+                lines.append(s)
+
+        return lines
+
+    def _normalize_policy_line(line: str) -> str:
+        line = re.sub(r"\bare permitted to\b", "can", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bpermitted to\b", "can", line, flags=re.IGNORECASE)
+        return line
 
     if schema == AnswerSchema.FACT_SINGLE:
+        # Try to find a good sentence from the top evidence
         for ev in evidence_items:
             snippet = getattr(ev, "snippet", "") or ""
-            for raw_line in snippet.splitlines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-                # Split by sentence boundaries, but avoid splitting on common abbreviations
-                import re
-                for candidate in re.split(r"(?<=[.!?])\s+", line):
-                    candidate = candidate.strip()
-                    if not candidate or refusal_phrase in candidate:
-                        continue
-                    return candidate
-
-            heading = (getattr(ev, "heading", "") or "").strip()
-            if heading and refusal_phrase not in heading:
-                return heading
-
-        for ev in evidence_items:
-            snippet = (getattr(ev, "snippet", "") or "").strip()
-            if snippet:
-                return _first_line(snippet) or snippet
-            heading = (getattr(ev, "heading", "") or "").strip()
-            if heading:
-                return heading
-
+            best = _get_best_content_line(snippet)
+            if best:
+                return best
         return None
-
 
     if schema == AnswerSchema.POLICY_EXCERPT:
         bullets: List[str] = []
+        seen = set()
         for ev in evidence_items[:3]:
-            base = _first_line(getattr(ev, "snippet", ""))
-            if not base or refusal_phrase in base:
-                continue
-            bullets.append(f"- {base}")
+            snippet = getattr(ev, "snippet", "")
+            for base in _get_content_lines(snippet):
+                base = _normalize_policy_line(base)
+                if base in seen:
+                    continue
+                bullets.append(f"- {base}")
+                seen.add(base)
+                if len(bullets) >= 4:
+                    break
+            if len(bullets) >= 4:
+                break
         return "\n".join(bullets) if bullets else None
 
     if schema == AnswerSchema.CHECKLIST_PROCEDURE:
-        items: List[str] = []
-        for idx, ev in enumerate(evidence_items[:5], start=1):
-            base = _first_line(getattr(ev, "snippet", ""))
-            if not base or refusal_phrase in base:
-                continue
-            items.append(f"{idx}. {base}")
+        bases: List[str] = []
+        for ev in evidence_items[:5]:
+            snippet = getattr(ev, "snippet", "")
+            for line in _get_content_lines(snippet):
+                if re.match(r"^\d+\.", line) or line.startswith(("-", "*", "•")):
+                    base = re.sub(r"^\d+\.\s*", "", line)
+                    base = base.lstrip("-*• ").strip()
+                    if base:
+                        bases.append(base)
+                elif not bases:
+                    bases.append(line)
+                if len(bases) >= 6:
+                    break
+            if len(bases) >= 6:
+                break
+        items = [f"{idx}. {base}" for idx, base in enumerate(bases[:5], start=1)]
         return "\n".join(items) if items else None
         
     if schema == AnswerSchema.SUMMARY_OVERVIEW:
-        if not evidence_items:
-            return None
-            
-        # 1. Prefer chunks from the same doc as the top hit
-        top_doc_id = getattr(evidence_items[0], "doc_id", None)
-        
-        # Sort/filter evidence: same doc first, then others
-        same_doc_ev = [ev for ev in evidence_items if getattr(ev, "doc_id", None) == top_doc_id]
-        other_doc_ev = [ev for ev in evidence_items if getattr(ev, "doc_id", None) != top_doc_id]
-        sorted_evidence = same_doc_ev + other_doc_ev
-        
+        # Similar logic to Policy Excerpt
         bullets: List[str] = []
-        seen_points = set()
-        
-        for ev in sorted_evidence:
-            if len(bullets) >= 8:
-                break
-                
-            snippet = getattr(ev, "snippet", "") or ""
-            
-            # Extract potential points from snippet
-            lines = snippet.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line or refusal_phrase in line:
-                    continue
-                    
-                candidate = None
-                
-                # Case 1: Bullet point
-                if line.startswith(('-', '*', '•')):
-                    candidate = line.lstrip("-*• ").strip()
-                    
-                # Case 2: Numbered list
-                elif re.match(r"^\d+\.\s+", line):
-                    candidate = re.sub(r"^\d+\.\s+", "", line).strip()
-                    
-                # Case 3: ALL CAPS heading or "Heading:" pattern
-                elif (line.isupper() and len(line) < 60) or (line.endswith(':') and len(line) < 60):
-                    candidate = line.strip(":")
-                    
-                # Case 4: If we are desperate (few bullets), take the first sentence
-                elif len(bullets) < 2 and len(line) > 20 and line[0].isupper():
-                     candidate = line
-                
-                if candidate and candidate not in seen_points:
-                    # Strip timestamps if needed (simple heuristic)
-                    # e.g. "9:00 AM - Arrival" -> "Arrival"
-                    candidate = re.sub(r"^\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?\s*[-–]\s*", "", candidate)
-                    
-                    bullets.append(f"- {candidate}")
-                    seen_points.add(candidate)
-                    if len(bullets) >= 8: break
-            
-            # If we didn't get anything from the snippet lines, try the heading/first line
-            if len(bullets) < 8:
-                heading = getattr(ev, "heading", "")
-                first = _first_line(snippet)
-                
-                # Use heading if available and not seen
-                if heading and heading not in seen_points and refusal_phrase not in heading:
-                     bullets.append(f"- {heading}")
-                     seen_points.add(heading)
-                # Else use first line
-                elif first and first not in seen_points and refusal_phrase not in first:
-                     bullets.append(f"- {first}")
-                     seen_points.add(first)
-
+        seen = set()
+        for ev in evidence_items[:5]:
+            base = _get_best_content_line(getattr(ev, "snippet", ""))
+            if base and base not in seen and refusal_phrase not in base:
+                bullets.append(f"- {base}")
+                seen.add(base)
         return "\n".join(bullets) if bullets else None
 
-    # For BOOLEAN_SPECIFIED or unknown schemas, prefer explicit validation failure
     return None
 
 
@@ -1948,33 +1996,25 @@ async def query_collection(
     def _determine_answer_schema(q: str) -> AnswerSchema:
         q_lower = q.lower()
         
-        # Check for CHECKLIST_PROCEDURE (highest priority)
-        if any(phrase in q_lower for phrase in ["what do i do", "steps", "how do i"]):
+        # Check for CHECKLIST_PROCEDURE (Explicit requests for lists)
+        # We REMOVED "how do i" from here because it often asks for a single fact.
+        if any(phrase in q_lower for phrase in ["steps", "checklist", "procedure", "process for", "list of"]):
             return AnswerSchema.CHECKLIST_PROCEDURE
         
         # Check for SUMMARY_OVERVIEW
-        if any(word in q_lower for word in ["overview", "process", "summarize", "summary"]) or "what is the onboarding process" in q_lower:
+        if any(word in q_lower for word in ["overview", "summarize", "summary"]) or "what is the onboarding process" in q_lower:
             return AnswerSchema.SUMMARY_OVERVIEW
         
         # Check for POLICY_EXCERPT
-        if any(word in q_lower for word in ["policy", "allowed", "required"]):
+        if any(word in q_lower for word in ["policy", "allowed", "required", "rules", "guidelines"]):
             return AnswerSchema.POLICY_EXCERPT
         
-        # Check for FACT_SINGLE
-        if q_lower.startswith(("what time", "where", "who", "what is")):
-            return AnswerSchema.FACT_SINGLE
-        
         # Check for BOOLEAN_SPECIFIED
-        if q_lower.startswith(("is ", "are ")):
+        if q_lower.startswith(("is ", "are ", "can ", "do ")):
             return AnswerSchema.BOOLEAN_SPECIFIED
-        
-        # Check for NOT_FOUND_EXPLICIT
-        if any(word in q_lower for word in ["mentioned", "specified"]):
-            return AnswerSchema.NOT_FOUND_EXPLICIT
-        
-        # Default fallback
+            
+        # Default fallback (covers "How do I fix...", "What is...", "Who is...", etc.)
         return AnswerSchema.FACT_SINGLE
-    
     answer_schema = _determine_answer_schema(question)
     target_field = _detect_benefits_target_field(question)
 
@@ -2566,6 +2606,29 @@ async def query_collection(
 
             return arrival_time_gen(), source_files, evidence_items, context_text, debug_info
 
+    # --- Error Code Extraction: deterministic answer for specific error codes ---
+    error_code_match = re.search(r"\bE-\d+\b", question, re.IGNORECASE)
+    if error_code_match and evidence_items:
+        code = error_code_match.group(0).upper()
+        error_line = _extract_error_code_line(evidence_items, code)
+        if error_line:
+            async def error_code_gen():
+                yield error_line
+
+            debug_info = {
+                "retrieved": len(hits),
+                "selected": [
+                    {"chunk_id": h.chunk_id, "dist": h.dist, "source": h.meta.get("source_file"), "header": h.meta.get("header")}
+                    for h in selected
+                ],
+                "refused": False,
+                "pipeline_marker": "EXTRACTOR_DIRECT_HIT",
+                "request_id": request_id,
+                "answer_schema": answer_schema,
+            }
+
+            return error_code_gen(), source_files, evidence_items, context_text, debug_info
+
     # --- Orientation Time Extraction: Deterministic bypass for production ---
     is_orientation_time_question = any(kw in question.lower() for kw in ["orientation time", "when orientation", "orientation start"])
     if is_orientation_time_question and primary_hit:
@@ -2975,33 +3038,30 @@ async def query_collection(
                 else:
                     is_valid = False
 
+        error_code_match = re.search(r"\bE-\d+\b", question, re.IGNORECASE)
+        if answer_schema == AnswerSchema.FACT_SINGLE and error_code_match and not final_answer_text:
+            code = error_code_match.group(0).upper()
+            corrected = _extract_error_code_line(evidence_items, code)
+            if corrected:
+                final_answer_text = corrected
+                if isinstance(debug_info, dict):
+                    debug_info["fallback_from_evidence"] = True
+                    debug_info["pipeline_marker"] = "EXTRACTOR_DIRECT_HIT"
+                    debug_info["final_answer_text_override"] = corrected
+
         # 3a) Invariant correction path: do NOT retry automatically when
         # the refusal phrase appears for non-NOT_FOUND_EXPLICIT schemas.
-        if invariant_violated:
+        if invariant_violated and not final_answer_text:
             if isinstance(debug_info, dict):
                 debug_info["invariant_violation_detected"] = True
 
-            corrected = _construct_schema_correct_answer_from_evidence(
-                answer_schema, evidence_items
-            )
-            if corrected:
-                # We resolved the invariant locally using evidence only.
-                final_answer_text = corrected
-                if isinstance(debug_info, dict):
-                    debug_info["invariant_violation_resolved"] = True
-                    debug_info["invariant_violation_final_action"] = (
-                        "CORRECTED_USING_EVIDENCE"
-                    )
-                    debug_info["corrected_answer_snippet"] = corrected[:200]
-                    debug_info["final_answer_text_override"] = corrected
-            else:
-                fallback_line = None
-                if answer_schema == AnswerSchema.FACT_SINGLE and evidence_items:
-                    fallback_line = _select_fact_single_fallback(
-                        question,
-                        evidence_items,
-                        target_field=target_field,
-                    )
+            fallback_line = None
+            if answer_schema == AnswerSchema.FACT_SINGLE and evidence_items:
+                fallback_line = _select_fact_single_fallback(
+                    question,
+                    evidence_items,
+                    target_field=target_field,
+                )
                 if fallback_line:
                     final_answer_text = fallback_line
                     if isinstance(debug_info, dict):
@@ -3010,6 +3070,21 @@ async def query_collection(
                         debug_info["refused"] = False
                         debug_info["refusal_reason"] = None
                         debug_info["final_answer_text_override"] = fallback_line
+
+            if not final_answer_text:
+                corrected = _construct_schema_correct_answer_from_evidence(
+                    answer_schema, evidence_items
+                )
+                if corrected:
+                    # We resolved the invariant locally using evidence only.
+                    final_answer_text = corrected
+                    if isinstance(debug_info, dict):
+                        debug_info["invariant_violation_resolved"] = True
+                        debug_info["invariant_violation_final_action"] = (
+                            "CORRECTED_USING_EVIDENCE"
+                        )
+                        debug_info["corrected_answer_snippet"] = corrected[:200]
+                        debug_info["final_answer_text_override"] = corrected
                 else:
                     # Could not construct a schema-correct answer from evidence
                     # -> mark validation failure with refusal and reason and
