@@ -1,0 +1,27 @@
+[
+  {
+    "question": "What is the current remote work policy?",
+    "expected_answer": "Employees can work remotely 3 days per week (Tuesday, Wednesday, Thursday). Monday and Friday are mandatory in-office days.",
+    "expected_source_filename": "policy_2025.txt"
+  },
+  {
+    "question": "What is the daily meal allowance?",
+    "expected_fact": "75",
+    "expected_source_filename": "policy_2025.txt"
+  },
+  {
+    "question": "How do I fix error E-102?",
+    "expected_answer": "Rotate the JWT secret.",
+    "expected_source_filename": "deployment_guide.txt"
+  },
+  {
+    "question": "What are the steps to deploy the server?",
+    "expected_answer": "1. Install dependencies\n2. Set RAGIFY_MODE\n3. Run migrations\n4. Start server",
+    "expected_source_filename": "deployment_guide.txt"
+  },
+  {
+    "question": "What did Mike order for lunch?",
+    "expected_answer": "Burger",
+    "note": "We accept the answer because the document exists in the corpus."
+  }
+]
