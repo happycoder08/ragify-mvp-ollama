@@ -203,7 +203,7 @@ class QueryFinalResponse(BaseModel):
     needs_clarification: Optional[bool] = Field(default=None, description="True if the system needs user input to proceed")
     clarification: Optional[ClarificationPayload] = Field(default=None, description="Details about the required clarification")
     
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_response_consistency(cls, values):
         """Validate response consistency: refusal message, evidence, sources, and clarification."""
         import logging
@@ -342,3 +342,4 @@ def build_clarification_payload(
         "evidence": [],
         "sources": [],
     }
+

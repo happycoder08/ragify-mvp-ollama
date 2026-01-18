@@ -1,0 +1,26 @@
+[
+  {
+    "question": "When is the deadline for Project Alpha?",
+    "expected_answer": "December 31st, 2025",
+    "expected_source_filename": "project_alpha.pdf",
+    "note": "Fails if 'PRO-JECT' isn't de-hyphenated or if lines aren't merged."
+  },
+  {
+    "question": "What was the revenue growth in Q3?",
+    "expected_fact": "20%",
+    "expected_source_filename": "q3_financials.html",
+    "note": "Fails if HTML tags <b>/<u> aren't stripped."
+  },
+  {
+    "question": "What is the department of Robert Tables?",
+    "expected_answer": "Security",
+    "expected_source_filename": "employee_record.json",
+    "note": "Fails if JSON isn't flattened into readable text."
+  },
+  {
+    "question": "What is the current password length requirement?",
+    "expected_answer": "14 characters",
+    "expected_source_filename": "security_policy_v2_2025.txt",
+    "note": "Fails if it retrieves the old V1 policy (8 chars)."
+  }
+]

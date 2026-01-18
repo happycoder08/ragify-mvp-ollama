@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 python-multipart
-pydantic
+pydantic<2
 chromadb<0.4.0
 pypdf
 python-docx
@@ -15,3 +15,5 @@ bcrypt
 pytest-asyncio
 asgi_lifespan
 scikit-learn
+
+

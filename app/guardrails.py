@@ -62,7 +62,7 @@ GUARDRAIL_CONFIGS: Dict[str, GuardrailConfig] = {
     "default": GuardrailConfig(
         max_file_size_mb=10,
         max_files_per_request=5,
-        allowed_extensions={'.pdf', '.txt', '.docx', '.md'},
+        allowed_extensions={'.pdf', '.txt', '.docx', '.md', '.json', '.html'},
         max_requests_per_minute=20,
         max_requests_per_hour=500,
         max_upload_mb_per_hour=100,
@@ -73,7 +73,7 @@ GUARDRAIL_CONFIGS: Dict[str, GuardrailConfig] = {
     "acme": GuardrailConfig(
         max_file_size_mb=25,  # Higher limits for enterprise
         max_files_per_request=10,
-        allowed_extensions={'.pdf', '.txt', '.docx', '.md', '.csv', '.xlsx'},
+        allowed_extensions={'.pdf', '.txt', '.docx', '.md', '.csv', '.xlsx', '.json', '.html'},
         max_requests_per_minute=50,
         max_requests_per_hour=2000,
         max_upload_mb_per_hour=500,
@@ -84,7 +84,7 @@ GUARDRAIL_CONFIGS: Dict[str, GuardrailConfig] = {
     "finance": GuardrailConfig(
         max_file_size_mb=15,
         max_files_per_request=8,
-        allowed_extensions={'.pdf', '.txt', '.docx', '.md', '.csv', '.xlsx'},
+        allowed_extensions={'.pdf', '.txt', '.docx', '.md', '.csv', '.xlsx', '.json', '.html'},
         max_requests_per_minute=30,
         max_requests_per_hour=1000,
         max_upload_mb_per_hour=200,

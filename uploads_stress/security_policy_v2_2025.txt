@@ -1,0 +1,2 @@
+PASSWORD POLICY V2 (2025)
+Passwords must be at least 14 characters long and include a symbol.

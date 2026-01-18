@@ -1,0 +1,2 @@
+PASSWORD POLICY V1
+Passwords must be at least 8 characters long.

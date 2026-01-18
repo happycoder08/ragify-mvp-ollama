@@ -26,7 +26,7 @@ if ($pg -eq "ragify-postgres") {
     }
 } else {
     Write-Host "Creating container..." -ForegroundColor Yellow
-    docker run -d --name ragify-postgres -e POSTGRES_USER=ragify -e POSTGRES_PASSWORD=ragify123 -e POSTGRES_DB=ragify_db -p 5432:5432 postgres:15 2>$null | Out-Null
+    docker run -d --name ragify-postgres -e POSTGRES_USER=ragify -e POSTGRES_PASSWORD=ragify -e POSTGRES_DB=ragify_db -p 5432:5432 postgres:15 2>$null | Out-Null
     Start-Sleep -Seconds 5
     Write-Host "OK - Created (localhost:5432)" -ForegroundColor Green
 }

@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+  ragify-api:
+    build: .
+    container_name: ragify-api
+    ports:
+      - "8000:8000"
+    environment:
+      - RAGIFY_MODE=demo
+      - DEFAULT_MODE=demo
+      - LLM_PROVIDER=ollama
+      # Connects to Host machine's Ollama
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Connect to Host machine's Postgres (password 'ragify')
+      - DATABASE_URL=postgresql://ragify:ragify@host.docker.internal:5432/ragify_db
+      - CHROMA_DB_IMPL=duckdb+parquet
+      - PERSIST_DIRECTORY=/app/db
+      - LOG_LEVEL=INFO
+      # Allow your specific frontend port (e.g. localhost:3000)
+      - ALLOW_ORIGINS=http://localhost:3000
+    volumes:
+      # Persist the vector DB
+      - ragify_data:/app/db
+      # Mount the stress-test folder we created
+      - ./uploads_stress:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  ragify_data:

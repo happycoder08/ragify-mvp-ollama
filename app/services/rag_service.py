@@ -1035,7 +1035,11 @@ def _get_embedding_provider():
     from app.services import clients
 
     http_client = clients.get_http_client()  # will raise if not initialized (correct in prod)
-    _embedding_provider = RealEmbedder(http_client=http_client)
+    _embedding_provider = RealEmbedder(
+        http_client=http_client,
+        model=EMBEDDING_MODEL,
+        base_url=os.getenv("OLLAMA_BASE_URL"),
+    )
     logger.info("Embedding provider initialized: RealEmbedder (provider=%s)", provider)
     return _embedding_provider
 
