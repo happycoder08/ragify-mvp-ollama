@@ -1,8 +1,10 @@
 # RAGify AI – Multi-Tenant Document Intelligence Platform
 
-A production-ready Retrieval-Augmented Generation (RAG) system for enterprise document Q&A. It combines a FastAPI backend, tenant-aware access controls, document ingestion, vector retrieval, and grounding-aware generation into one coherent AI application.
+RAGify AI is a production-style Retrieval-Augmented Generation application built for enterprise document Q&A. The platform enables users to upload internal knowledge documents, retrieve the most relevant passages, and ask grounded questions with answers tied back to the original source material.
 
-This project is designed to demonstrate strong end-to-end engineering: secure backend design, real document processing, retrieval quality, grounding safeguards, and a testable automation flow that can be explained clearly to recruiters and hiring managers.
+Built with FastAPI, PostgreSQL, ChromaDB, and LLM providers such as Ollama and OpenAI, this project demonstrates full-stack AI engineering in a practical business context. It includes multi-tenant access controls, document ingestion pipelines, response grounding safeguards, and a test suite designed to validate retrieval quality and end-to-end system behavior.
+
+This is a portfolio-ready project that highlights the intersection of backend engineering, AI systems design, and product thinking: secure APIs, real retrieval workflows, guardrails, evaluation, and a maintainable architecture that is easy to explain and extend.
 
 ## Project at a glance
 
