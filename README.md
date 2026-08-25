@@ -38,7 +38,7 @@ PostgreSQL  ChromaDB    Ollama    Optional OpenAI / Mock
 Metadata    Embeddings  Models    Testing provider
 ```
 
-## Why it stands out in a portfolio
+## What is unique about RAGify
 
 - Shows real product thinking beyond a simple chatbot
 - Includes access control, multi-tenant boundaries, and secure API patterns
