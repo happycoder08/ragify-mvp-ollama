@@ -9,6 +9,10 @@ on:
 jobs:
   eval:
     runs-on: ubuntu-latest
+    env:
+      APP_MODE: ci
+      LLM_PROVIDER: mock
+      RAGIFY_MOCK: "1"
     
     steps:
     - uses: actions/checkout@v4
@@ -22,6 +26,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+
+    - name: Seed evaluation corpus
+      run: |
+        python scripts/seed_corpus.py
         
     - name: Run Evaluation
       run: |
