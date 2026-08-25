@@ -150,6 +150,7 @@ def extract_evidence_lines(
 
         # Token-based filter: exclude lines with <2 tokens unless they have digits/time markers
         line_tokens = _tokenize_and_filter(line_stripped)
+        line_token_set = set(line_tokens)
         has_anchor = bool(
             re.search(r'\b\d+', line_stripped) or  # Contains digits
             re.search(r'\b\d{1,2}:\d{2}', line_stripped) or  # Time pattern HH:MM
@@ -163,7 +164,6 @@ def extract_evidence_lines(
                 continue  # Skip lines with insufficient content
 
         # Tokenize line for overlap
-        line_token_set = set(line_tokens)
         raw_overlap = len(q_tokens & line_token_set)
         effective_overlap = raw_overlap
         anchor_bonus_applied = False

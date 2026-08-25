@@ -26,19 +26,35 @@ def _enable_mock_indexing_if_needed() -> None:
         logger.info("Mock/CI mode detected; enabling Chroma indexing for eval corpus seeding.")
 
 
+def _iter_seed_files() -> list[Path]:
+    """Return the eval corpus files, preferring the richer onboarding docs used by the demo/product flow."""
+    candidates = [Path("uploads_stress"), Path("demo_docs"), Path("tests/testdata/docs")]
+    files: list[Path] = []
+    seen: set[str] = set()
+    for base in candidates:
+        if not base.exists():
+            continue
+        for f_path in sorted(base.glob("*.*")):
+            resolved = str(f_path.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(f_path)
+    return files
+
+
 async def seed():
     _enable_mock_indexing_if_needed()
     logger.info("Initializing clients...")
     clients.initialize_chroma_client()
     await clients.initialize_http_client()
-    
-    stress_dir = Path("uploads_stress")
-    if not stress_dir.exists():
-        logger.error(f"Directory {stress_dir} not found!")
+
+    files = _iter_seed_files()
+    if not files:
+        logger.error("No seed corpus files found under uploads_stress/ or tests/testdata/docs/")
         return
 
-    files = list(stress_dir.glob("*.*"))
-    logger.info(f"Found {len(files)} files in {stress_dir}")
+    logger.info(f"Found {len(files)} files across seed corpus directories")
 
     tenant_id = "default"
 
@@ -53,14 +69,13 @@ async def seed():
 
             # 2. Chunk
             # Use section-aware chunking if possible
-            chunks = ingestion.chunk_text_sections(text) 
+            chunks = ingestion.chunk_text_sections(text)
             if not chunks:
-                 chunks = ingestion.chunk_text(text)
-            
+                chunks = ingestion.chunk_text(text)
+
             logger.info(f"Generated {len(chunks)} chunks for {f_path.name}")
 
             # 3. Index
-            # index_files(tenant_id, chunks, source_filename, doc_id=None)
             await rag_service.index_files(
                 tenant_id=tenant_id,
                 chunks=chunks,

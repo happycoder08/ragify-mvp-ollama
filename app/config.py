@@ -187,14 +187,14 @@ class Settings:
     @property
     def GROUNDING_THRESHOLD(self) -> float:
         mode = (RAGIFY_MODE or "").lower()
-        if mode == "pilot":
+        if mode in {"demo", "pilot"}:
             return 0.45
         return 0.85
 
     @property
     def TOKEN_OVERLAP_THRESHOLD(self) -> int:
         mode = (RAGIFY_MODE or "").lower()
-        if mode == "pilot":
+        if mode in {"demo", "pilot"}:
             return 1
         return 2
 

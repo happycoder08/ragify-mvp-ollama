@@ -2517,9 +2517,16 @@ async def query_collection(
     )
 
     if not should_proceed:
-        # OVERRIDE: In DEV or DEMO modes, ignore grounding failures to allow debugging.
+        # Only allow a deliberate override for local debugging, never in CI/mock eval paths.
         current_mode = str(RAGIFY_MODE).upper()
-        if current_mode in ("DEV", "DEMO", "FAST") and not should_proceed:
+        is_ci_or_mock = (
+            os.getenv("APP_MODE", "").lower() == "ci"
+            or os.getenv("CI", "").lower() in ("true", "1", "yes")
+            or os.getenv("RAGIFY_MOCK", "0") == "1"
+            or os.getenv("LLM_PROVIDER", "").lower() == "mock"
+        )
+        debug_override = os.getenv("ALLOW_GROUNDING_GATE_OVERRIDE", "0").lower() == "true"
+        if current_mode in ("DEV", "DEMO", "FAST") and not is_ci_or_mock and debug_override:
             logger.warning(f"[RAG] Grounding Gate override active for {current_mode} mode. Proceeding despite low score.")
             should_proceed = True
             refusal_reason = None
