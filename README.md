@@ -1,40 +1,40 @@
 # RAGify AI – Multi-Tenant Document Intelligence Platform
 
-A production-ready Retrieval-Augmented Generation (RAG) system with **multi-tenant support**, **JWT authentication**, and **document tracking**.
+A production-ready Retrieval-Augmented Generation (RAG) system for enterprise document Q&A, designed to feel like a polished internal knowledge assistant rather than a prototype.
+
+This project demonstrates end-to-end engineering for a real AI product: secure auth, multi-tenant isolation, document ingestion, vector search, grounding-aware generation, and a testing workflow suitable for a portfolio or production handoff.
+
+## Why this project matters
+
+- Built with FastAPI and Python for a real backend service
+- Uses tenant-aware document retrieval and access boundaries
+- Supports document ingestion from PDF, DOCX, and TXT sources
+- Applies grounding constraints so answers stay tied to indexed source material
+- Includes evaluation and integration tests to validate behavior
+- Designed to be easy to run locally and easy to explain to recruiters and hiring teams
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (Static HTML)                  │
-│  • Login page with authentication                            │
-│  • Tenant-specific branding and configuration                │
-│  • Document upload and management                            │
-│  • Query interface with streaming responses                  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   FastAPI Backend (main.py)                  │
-│  • JWT authentication middleware                             │
-│  • Protected API endpoints                                   │
-│  • Tenant access verification                                │
-│  • Streaming response handling                               │
-└─────────────────────────────────────────────────────────────┘
-                              │
-            ┌─────────────────┼─────────────────┐
-            ▼                 ▼                 ▼
-┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐
-│   PostgreSQL    │  │  ChromaDB       │  │   Ollama     │
-│   (Metadata)    │  │  (Embeddings)   │  │  (AI Models) │
-│                 │  │                 │  │              │
-│ • Documents     │  │ • Tenant-scoped │  │ • Embeddings │
-│ • Users         │  │   collections   │  │ • Chat (LLM) │
-│ • Tenants       │  │ • Vector search │  │              │
-└─────────────────┘  └─────────────────┘  └──────────────┘
+```text
+Frontend (Static UI)
+  ├─ login and tenant-aware dashboard
+  ├─ upload workflow for documents
+  └─ query interface with streaming responses
+            │
+            ▼
+FastAPI Backend (main.py)
+  ├─ authentication and tenant verification
+  ├─ protected document and query APIs
+  ├─ upload/index orchestration
+  └─ grounding-aware generation pipeline
+            │
+     ┌──────┼─────────┬─────────────┐
+     ▼      ▼         ▼             ▼
+PostgreSQL  ChromaDB   Ollama      Optional LLM/Mock
+Metadata    Embeddings  Chat/Embedding  Testing providers
 ```
 
-## ✨ Features
+## ✨ Core features
 
 ### Multi-Tenancy
 - **Tenant Isolation**: Each tenant has separate document collections in ChromaDB
@@ -544,10 +544,12 @@ init_db()  # Creates all tables
 
 ## 🤝 Contributing
 
-1. Create a feature branch from `phase1-mvp`
+1. Create a feature branch from `master`
 2. Make your changes
 3. Test thoroughly (see TESTING_GUIDE.md)
 4. Submit a pull request
+
+> The repository keeps historical project notes in the archive folder for reference, while the default branch is kept focused on the clean, maintainable product experience.
 
 ## 📄 License
 

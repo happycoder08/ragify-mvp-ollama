@@ -2,9 +2,9 @@ name: RAG Evaluation
 
 on:
   push:
-    branches: [ "main", "phase1-mvp" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main", "phase1-mvp" ]
+    branches: [ "master" ]
 
 jobs:
   eval:
