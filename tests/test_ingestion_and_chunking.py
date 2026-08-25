@@ -16,7 +16,7 @@ def test_ingestion_and_chunking(standard_questions):
     # Group questions by expected file to collect anchors
     file_anchors = {}
     for question in standard_questions:
-        if question["expected_file"] and question["expected_anchor"]:
+        if question.get("expected_file") and question.get("expected_anchor"):
             filename = question["expected_file"]
             if filename not in file_anchors:
                 file_anchors[filename] = []

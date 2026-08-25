@@ -4,7 +4,7 @@ from typing import Dict, Any
 # ===========================
 # RAGIFY MODE CONFIGURATION
 # ===========================
-# Set via env var: RAGIFY_MODE=dev|demo|prod
+# Set via env var: RAGIFY_MODE=dev|demo|pilot|prod
 RAGIFY_MODE = os.getenv("RAGIFY_MODE", "demo").lower()
 
 # ===========================
@@ -48,6 +48,8 @@ class ModeConfig:
         "max_conversation_turns": 10,
         "log_level": "DEBUG",
         "enable_timing_logs": True,
+        "grounding_threshold": 0.65,
+        "token_overlap_threshold": 1,
     }
     
     DEMO = {
@@ -84,6 +86,46 @@ class ModeConfig:
         "max_conversation_turns": 5,
         "log_level": "INFO",
         "enable_timing_logs": True,
+        "grounding_threshold": 0.65,
+        "token_overlap_threshold": 1,
+    }
+
+    PILOT = {
+        "mode": "pilot",
+        "default_mode": "full",
+        "debug": False,
+        
+        # LLM & Embedding
+        "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
+        "llm_model": os.getenv("LLM_MODEL", "llama3.1:8b"),
+        "embedding_provider": "ollama",
+        "embedding_model": "nomic-embed-text",
+        
+        # Performance
+        "request_timeout": 300,
+        "embedding_batch_size": 10,
+        "max_tokens_fast": 100,
+        "max_tokens_full": 500,
+        
+        # Retrieval
+        "top_k_fast": 3,
+        "top_k_full": 5,
+        "similarity_threshold": 350,
+        "chunk_size": 800,
+        "chunk_overlap": 200,
+        "context_budget_chars": 4000,
+        
+        # Reranking
+        "reranker_provider": os.getenv("RERANKER_PROVIDER", "none"),
+        "reranker_top_n": 3,
+        "enable_reranking": True,
+        
+        # App Logic
+        "max_conversation_turns": 8,
+        "log_level": "INFO",
+        "enable_timing_logs": True,
+        "grounding_threshold": 0.65,
+        "token_overlap_threshold": 1,
     }
     
     PROD = {
@@ -118,6 +160,8 @@ class ModeConfig:
         
         # App Logic
         "max_conversation_turns": 8,
+        "grounding_threshold": 0.85,
+        "token_overlap_threshold": 2,
         "log_level": "INFO",
         "enable_timing_logs": True,
     }
@@ -129,16 +173,37 @@ class ModeConfig:
         configs = {
             "dev": cls.DEV,
             "demo": cls.DEMO,
+            "pilot": cls.PILOT,
             "prod": cls.PROD,
         }
         return configs.get(mode, cls.DEMO)
 
 
 # ===========================
+# SETTINGS (PILOT MODE)
+# ===========================
+
+class Settings:
+    @property
+    def GROUNDING_THRESHOLD(self) -> float:
+        mode = (RAGIFY_MODE or "").lower()
+        if mode == "pilot":
+            return 0.45
+        return 0.85
+
+    @property
+    def TOKEN_OVERLAP_THRESHOLD(self) -> int:
+        mode = (RAGIFY_MODE or "").lower()
+        if mode == "pilot":
+            return 1
+        return 2
+
+# ===========================
 # ACTIVE CONFIGURATION
 # ===========================
 
 CONFIG = ModeConfig.get_config(RAGIFY_MODE)
+settings = Settings()
 
 # Export commonly used settings
 DEFAULT_MODE = CONFIG["default_mode"]
@@ -161,6 +226,8 @@ RERANKER_TOP_N = CONFIG["reranker_top_n"]
 ENABLE_RERANKING = CONFIG["enable_reranking"]
 CONTEXT_BUDGET_CHARS = CONFIG.get("context_budget_chars", None)
 MAX_CONVERSATION_TURNS = CONFIG["max_conversation_turns"]
+GROUNDING_THRESHOLD = settings.GROUNDING_THRESHOLD
+TOKEN_OVERLAP_THRESHOLD = settings.TOKEN_OVERLAP_THRESHOLD
 LOG_LEVEL = CONFIG["log_level"]
 ENABLE_TIMING_LOGS = CONFIG["enable_timing_logs"]
 

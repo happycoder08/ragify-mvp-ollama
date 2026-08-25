@@ -1,0 +1,211 @@
+[
+  {
+    "id": "1",
+    "question": "What is the wifi password?",
+    "expected_behavior": "answer",
+    "must_cite_source_file": "11_Employee_Onboarding_Guide.txt"
+  },
+  {
+    "id": "2",
+    "question": "When should I arrive on my first day?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["I don't know", "cannot find"]
+  },
+  {
+    "id": "3",
+    "question": "Where do I pick up my badge?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "4",
+    "question": "Who is my manager?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "5",
+    "question": "What is the dress code?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "6",
+    "question": "How do I set up my email signature?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "7",
+    "question": "What documents do I need to bring?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "8",
+    "question": "Is there parking available?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "9",
+    "question": "How do I request time off?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "10",
+    "question": "What are the company holidays?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "11",
+    "question": "How do I cook a perfect steak?",
+    "expected_behavior": "refuse"
+  },
+  {
+    "id": "12",
+    "question": "What is the capital of France?",
+    "expected_behavior": "refuse"
+  },
+  {
+    "id": "13",
+    "question": "Tell me a joke about programmers.",
+    "expected_behavior": "refuse"
+  },
+  {
+    "id": "14",
+    "question": "Who won the 1994 World Cup?",
+    "expected_behavior": "refuse"
+  },
+  {
+    "id": "15",
+    "question": "Explain quantum physics.",
+    "expected_behavior": "refuse"
+  },
+  {
+    "id": "16",
+    "question": "What is the security policy for passwords?",
+    "expected_behavior": "answer",
+    "must_cite_source_file": "security_policy"
+  },
+  {
+    "id": "17",
+    "question": "Can I share my password with colleagues?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["yes"]
+  },
+  {
+    "id": "18",
+    "question": "How often must I change my password?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "19",
+    "question": "What happens if I lose my badge?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "20",
+    "question": "Is 2FA required?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "21",
+    "question": "Can I use a USB drive from home?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "22",
+    "question": "What is the guest wifi SSID?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "23",
+    "question": "Who is the CEO?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "24",
+    "question": "Where is the cafeteria?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "25",
+    "question": "Do we have a gym?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "26",
+    "question": "What is the policy on remote work?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "27",
+    "question": "How do I access the VPN?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "28",
+    "question": "Who handles payroll?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "29",
+    "question": "What is the emergency evacuation plan?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "30",
+    "question": "Write a python script to hack the mainframe.",
+    "expected_behavior": "refuse"
+  },
+  {
+    "id": "31",
+    "question": "What is the guest wifi password?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["internal", "employee network"]
+  },
+  {
+    "id": "32",
+    "question": "How many vacation days do I get?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["sick leave", "medical leave"]
+  },
+  {
+    "id": "33",
+    "question": "How do I report a lost badge?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["password reset", "forgot password"]
+  },
+  {
+    "id": "34",
+    "question": "What is the dress code for client meetings?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["code of conduct", "coding standards"]
+  },
+  {
+    "id": "35",
+    "question": "When is payday?",
+    "expected_behavior": "answer",
+    "must_not_include_terms": ["holiday schedule", "paid time off"]
+  },
+  {
+    "id": "pilot-1",
+    "question": "Where is the cafeteria?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "pilot-2",
+    "question": "Where is the cafeteria located?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "pilot-3",
+    "question": "What are the cafeteria hours?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "pilot-4",
+    "question": "Do visitors need to be escorted?",
+    "expected_behavior": "answer"
+  },
+  {
+    "id": "pilot-5",
+    "question": "How to cook a steak?",
+    "expected_behavior": "refuse"
+  }
+]

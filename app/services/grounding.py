@@ -10,7 +10,7 @@ import logging
 import os
 from typing import List, Tuple, Optional
 
-from app.config import RAGIFY_MODE
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,23 +56,6 @@ def validate_numeric_alignment(llm_answer: str, expected_val: float) -> bool:
     target = str(expected_val)
     return target in normalized
 
-# Grounding gate constants
-current_mode = str(RAGIFY_MODE).upper()
-# Allow relaxed grounding if we are in CI, DEV, or DEMO
-is_permissive = (
-    os.getenv("CI", "").lower() in ("true", "1", "yes")
-    or os.getenv("APP_MODE", "").lower() == "ci"
-    or current_mode in ("DEV", "DEMO")
-)
-
-if is_permissive:
-    # More lenient thresholds for CI/dev/demo testing
-    MIN_SUPPORT = 1  # Minimum single-line overlap count for evidence to proceed to LLM
-    MIN_TOTAL_SUPPORT = 1  # Minimum sum of top 3 overlaps across all evidence lines
-else:
-    # Production thresholds
-    MIN_SUPPORT = 2  # Minimum single-line overlap count for evidence to proceed to LLM
-    MIN_TOTAL_SUPPORT = 4  # Minimum sum of top 3 overlaps across all evidence lines
 
 MAX_EVIDENCE_LINES_TOTAL = 6  # Maximum total evidence lines across all chunks
 MAX_EVIDENCE_LINES_PER_CHUNK = 3  # Maximum evidence lines to extract per chunk
@@ -174,7 +157,10 @@ def extract_evidence_lines(
         )
 
         if len(line_tokens) < 2 and not has_anchor:
-            continue  # Skip lines with insufficient content
+            if settings.TOKEN_OVERLAP_THRESHOLD <= 1 and line_token_set & q_tokens:
+                pass
+            else:
+                continue  # Skip lines with insufficient content
 
         # Tokenize line for overlap
         line_token_set = set(line_tokens)
@@ -316,18 +302,23 @@ def _compute_grounding_gate(
     max_overlap = max(overlap_scores) if overlap_scores else 0
     sum_top3 = sum(sorted(overlap_scores, reverse=True)[:3])
     
+    # Calculate Grounding Score (Ratio of overlap to unique query tokens)
+    q_tokens = set(_tokenize_and_filter(question))
+    q_len = len(q_tokens)
+    grounding_score = (max_overlap / q_len) if q_len > 0 else 0.0
+
     # Extract text lines for return value
     evidence_lines = [line for line, _ in top_evidence_tuples]
     
     # Debug logging for grounding gate metrics
     logger.debug(
-        "Grounding gate: time_sensitive=%s, max_overlap=%.0f (threshold=%d), sum_top3=%.0f (threshold=%d), top_scores=%s",
-        is_time_sensitive, max_overlap, MIN_SUPPORT, sum_top3, MIN_TOTAL_SUPPORT,
+        "Grounding gate: time_sensitive=%s, max_overlap=%.0f (threshold=%d), score=%.2f (threshold=%.2f), top_scores=%s",
+        is_time_sensitive, max_overlap, settings.TOKEN_OVERLAP_THRESHOLD, grounding_score, settings.GROUNDING_THRESHOLD,
         [round(s, 1) for s in overlap_scores[:3]]
     )
     
-    # Check 2: Max overlap below minimum
-    # Allow explicit support for MIN_SUPPORT if any evidence line has anchor and question is time/numeric
+    # Check 2: Max overlap below minimum (Absolute Threshold)
+    # Allow explicit support for TOKEN_OVERLAP_THRESHOLD if any evidence line has anchor and question is time/numeric
     explicit_support = False
     if is_time_sensitive:
         for line, overlap in top_evidence_tuples:
@@ -337,18 +328,14 @@ def _compute_grounding_gate(
             if has_anchor and overlap >= 1:
                 explicit_support = True
                 break
-    # For non-time/numeric questions, allow passing if max_overlap >= MIN_SUPPORT
-    if not is_time_sensitive:
-        if max_overlap < MIN_SUPPORT:
-            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
-        # Legacy: allow passing if max_overlap >= MIN_SUPPORT, regardless of sum_top3
-        # (do not enforce sum_top3 for non-time/numeric questions)
-    else:
-        if max_overlap < MIN_SUPPORT and not explicit_support:
-            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
-        if sum_top3 < MIN_TOTAL_SUPPORT and not explicit_support:
-            return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
     
+    # Apply Thresholds
+    if max_overlap < settings.TOKEN_OVERLAP_THRESHOLD and not explicit_support:
+        return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SUPPORT"
+
+    if grounding_score < settings.GROUNDING_THRESHOLD and not explicit_support:
+        return False, "NOT_FOUND", evidence_lines, max_overlap, sum_top3, "LOW_SCORE"
+
     # Check 4: Numeric/time-sensitive questions need numeric/time anchors
     q_lower = question.lower()
     # Detect numeric/time questions

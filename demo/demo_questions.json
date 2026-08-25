@@ -1,0 +1,93 @@
+[
+  {
+    "id": "q1",
+    "question": "What is the return window for items bought in 2025?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2025.md"],
+    "notes": "Fact retrieval from 2025 doc. Expect 30 days."
+  },
+  {
+    "id": "q2",
+    "question": "How long do I have to return a product purchased in January 2026?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2026.md"],
+    "notes": "Fact retrieval from 2026 doc. Expect 45 days."
+  },
+  {
+    "id": "q3",
+    "question": "Does ACME do price matching if I find a cheaper widget elsewhere?",
+    "expected_behavior": "refuse",
+    "target_docs": [],
+    "notes": "Refusal: Docs do not mention price matching."
+  },
+  {
+    "id": "q4",
+    "question": "I was charged a 15% restocking fee for a purchase made last year (2025). Is that correct?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2025.md", "acme_refunds_policy_2026.md"],
+    "notes": "Conflict/Correction. 2025 fee was 10%, not 15%."
+  },
+  {
+    "id": "q5",
+    "question": "Can I get a refund for shipping charges if my delivery was delayed?",
+    "expected_behavior": "refuse",
+    "target_docs": [],
+    "notes": "Refusal: Docs do not mention shipping delay refunds."
+  },
+  {
+    "id": "q6",
+    "question": "Do I get free meals on Fridays?",
+    "expected_behavior": "refuse",
+    "target_docs": [],
+    "notes": "Refusal: Docs do not mention free meals on Fridays."
+  },
+  {
+    "id": "q7",
+    "question": "How many days does it take to process a refund in the new 2026 policy?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2026.md"],
+    "notes": "Fact retrieval. Expect 10 business days."
+  },
+  {
+    "id": "q8",
+    "question": "Compare the restocking fees between 2025 and 2026.",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2025.md", "acme_refunds_policy_2026.md"],
+    "notes": "Multi-hop. 10% vs 15%."
+  },
+  {
+    "id": "q9",
+    "question": "I bought a custom widget. Can I return it?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2025.md", "acme_refunds_policy_2026.md"],
+    "notes": "Fact retrieval. No (non-refundable)."
+  },
+  {
+    "id": "q10",
+    "question": "What is the PTO accrual rate for employees?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_employee_handbook.md"],
+    "notes": "Fact retrieval. 1.5 days per month."
+  },
+  {
+    "id": "q11",
+    "question": "When does the refrigerator get cleaned out?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_employee_handbook.md"],
+    "notes": "Fact retrieval. Fridays at 5:00 PM."
+  },
+  {
+    "id": "q12",
+    "question": "Is proof of purchase required for returns under the 2026 policy?",
+    "expected_behavior": "answer",
+    "target_docs": ["acme_refunds_policy_2026.md"],
+    "notes": "Fact retrieval. Yes."
+  },
+  {
+    "id": "q13",
+    "question": "How do I fly a helicopter?",
+    "expected_behavior": "refuse",
+    "target_docs": [],
+    "notes": "Out of domain refusal."
+  }
+]

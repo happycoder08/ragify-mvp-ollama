@@ -1,0 +1,8 @@
+[
+  {
+    "id": "video_demo_expense",
+    "question": "Are minibar charges or alcohol expenses reimbursable?",
+    "expected_behavior": "answer",
+    "notes": "Uses 'minibar' (rare token) to force retrieval of Page 3."
+  }
+]

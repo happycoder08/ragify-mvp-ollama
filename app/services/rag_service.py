@@ -109,6 +109,68 @@ def _dedupe_by_header(hits: List[ChunkHit], ids: List[str] = None, max_per_heade
         out.extend(buckets[hk])
     return out
 
+
+def _provider_rerank_hits(question: str, hits: List[ChunkHit], top_n: int, debug: int = 0) -> List[ChunkHit]:
+    """
+    Rerank hits using the configured RerankerProvider via the provider abstraction.
+    Does not modify 'final_score', only attaches 'rerank_score' to meta.
+    """
+    if not hits:
+        return []
+
+    try:
+        provider = _get_reranker_provider()
+        
+        # Prepare inputs for the provider
+        documents = [h.doc for h in hits]
+        metadata = [
+            {
+                "doc_id": h.meta.get("doc_id"),
+                "chunk": h.meta.get("chunk"),
+                "tenant_id": h.meta.get("tenant_id"),
+                "source_file": h.meta.get("source_file") or h.meta.get("filename"),
+            } 
+            for h in hits
+        ]
+
+        if debug >= 1:
+            logger.info("Reranking %d hits with %s (top_n=%d)", len(hits), provider.__class__.__name__, top_n)
+
+        # Execute rerank
+        # provider.rerank returns (indices, scores)
+        indices, scores = provider.rerank(
+            query=question, 
+            documents=documents, 
+            top_n=top_n, 
+            metadata=metadata
+        )
+        
+        # Reconstruct sorted list
+        reranked_hits = []
+        for idx, score in zip(indices, scores):
+            # Safety check for index validity
+            if 0 <= idx < len(hits):
+                hit = hits[idx]
+                hit.meta["rerank_score"] = score
+                reranked_hits.append(hit)
+        
+        if debug >= 1:
+            log_entries = []
+            for h in reranked_hits[:10]:
+                sc = h.meta.get("rerank_score")
+                src = h.meta.get("source_file") or "unknown"
+                chunk_idx = h.meta.get("chunk")
+                doc_id = h.meta.get("doc_id")
+                log_entries.append(f"(doc={doc_id} ch={chunk_idx} src={src} sc={sc:.4f})")
+            logger.info("Top reranked hits: %s", ", ".join(log_entries))
+            
+        return reranked_hits
+
+    except Exception as e:
+        logger.error("Reranking failed with error: %s", e)
+        # Fallback: return original hits (sliced to top_n if strictly needed, but usually safe to return all)
+        return hits[:top_n] if top_n else hits
+
 def _get_anchor_type(doc: str) -> str | None:
     """Determine anchor type for a document chunk."""
     doc_lower = doc.lower()
@@ -239,8 +301,6 @@ from .grounding import (
     extract_numeric_consensus,
     validate_numeric_alignment,
     _compute_grounding_gate,
-    MIN_SUPPORT,
-    MIN_TOTAL_SUPPORT,
     MAX_EVIDENCE_LINES_TOTAL,
     MAX_EVIDENCE_LINES_PER_CHUNK,
 )
@@ -1846,10 +1906,11 @@ def _construct_schema_correct_answer_from_evidence(
         bullets: List[str] = []
         seen = set()
         for ev in evidence_items[:5]:
-            base = _get_best_content_line(getattr(ev, "snippet", ""))
-            if base and base not in seen and refusal_phrase not in base:
-                bullets.append(f"- {base}")
-                seen.add(base)
+            snippet = getattr(ev, "snippet", "")
+            for base in _get_content_lines(snippet):
+                if base and base not in seen and refusal_phrase not in base:
+                    bullets.append(f"- {base}")
+                    seen.add(base)
         return "\n".join(bullets) if bullets else None
 
     return None
@@ -2124,6 +2185,18 @@ async def query_collection(
     # Sort by final_score DESC, dist ASC, chunk_id ASC
     hits.sort(key=lambda h: (-h.final_score, h.dist, h.chunk_id))
 
+    # --- Provider Reranking ---
+    if ENABLE_RERANKING:
+        candidates = hits
+        # ensure enough candidates for reranking
+        if len(candidates) > max(20, RERANKER_TOP_N):
+            candidates = candidates[:max(20, RERANKER_TOP_N)]
+        
+        reranked = _provider_rerank_hits(question, candidates, top_n=RERANKER_TOP_N, debug=debug)
+        
+        # replace ordering of the head only, keep rest stable
+        hits = reranked + [h for h in hits if h not in reranked]
+
     # --- Conflict Detection (FACT_SINGLE) - Early Check ---
     if answer_schema == AnswerSchema.FACT_SINGLE:
         # Check top 20 hits for conflicts
@@ -2170,6 +2243,7 @@ async def query_collection(
                         "intent_signals": h.why_selected,
                         "anchor_type": anchor_type,
                         "anchor_detected": anchor_type is not None,
+                        "rerank_score": h.meta.get("rerank_score"),
                     })
                 except Exception:
                     retrieved_chunks_top20 = None
@@ -2219,6 +2293,8 @@ async def query_collection(
     # FIX: Strictly respect the context budget from config
     min_context_chars = 3000
     max_context_chars = CONTEXT_BUDGET_CHARS if CONTEXT_BUDGET_CHARS else 3000
+    
+    provider_rerank_active = bool(ENABLE_RERANKING)
 
     def _chunk_context_size(chunk: ChunkHit) -> int:
         return len(chunk.doc) + 80
@@ -2240,29 +2316,38 @@ async def query_collection(
                 break
         return capped
 
-    # 2) final select: include top hit per doc_id/source_file, then fill with MMR until budget
+    # 2) final select:
     selected = []
-    total_chars = 0
-    seen_doc_keys = set()
-    seed_hits = []
-    for h in hits_dedup:
-        key = _doc_key(h)
-        if key not in seen_doc_keys:
-            seen_doc_keys.add(key)
-            seed_hits.append(h)
+    
+    if provider_rerank_active:
+        # If provider reranking is active, trust its order implicitly.
+        # Skip MMR and heuristic sorting (which might scramble the provider's work).
+        # Simply take the top N (post-dedupe) that fit in the context budget.
+        selection_candidates = hits_dedup[:RERANKER_TOP_N] if RERANKER_TOP_N else hits_dedup[:internal_k]
+        selected = _cap_to_context_budget(selection_candidates)
+    else:
+        # Standard heuristic selection with MMR diversity
+        total_chars = 0
+        seen_doc_keys = set()
+        seed_hits = []
+        for h in hits_dedup:
+            key = _doc_key(h)
+            if key not in seen_doc_keys:
+                seen_doc_keys.add(key)
+                seed_hits.append(h)
 
-    for h in seed_hits:
-        selected.append(h)
-        total_chars += _chunk_context_size(h)
-
-    remaining_candidates = [h for h in hits_dedup if h not in selected]
-    if remaining_candidates:
-        mmr_ranked = _apply_mmr_selection(remaining_candidates, question_emb, len(remaining_candidates))
-        for h in mmr_ranked:
-            if total_chars >= max_context_chars:
-                break
+        for h in seed_hits:
             selected.append(h)
             total_chars += _chunk_context_size(h)
+
+        remaining_candidates = [h for h in hits_dedup if h not in selected]
+        if remaining_candidates:
+            mmr_ranked = _apply_mmr_selection(remaining_candidates, question_emb, len(remaining_candidates))
+            for h in mmr_ranked:
+                if total_chars >= max_context_chars:
+                    break
+                selected.append(h)
+                total_chars += _chunk_context_size(h)
     
     # ENFORCE intent constraints for time-based questions
     if is_time_arrival_intent:
@@ -2857,11 +2942,15 @@ async def query_collection(
                 "why_selected": why_selected if why_selected is not None else [],
                 "anchor_type": _get_debug_anchor_type(h.doc),
                 "anchor_detected": _get_debug_anchor_type(h.doc) is not None,
+                "rerank_score": h.meta.get("rerank_score"),
             })
         # Guarantee: selected_count always matches selected_chunks_debug length
         context_length = len(context_text) if context_text else 0
         evidence_count = len(evidence_items) if evidence_items else 0
         debug_info = {
+            "provider_rerank_active": provider_rerank_active,
+            "reranker_provider": _get_reranker_provider().__class__.__name__,
+            "rerank_top_n": RERANKER_TOP_N,
             "hits_count": len(hits),
             "selected_count": len(selected_chunks_debug),
             "total_retrieved": len(hits),

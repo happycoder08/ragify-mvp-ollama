@@ -47,7 +47,7 @@ async def test_sick_days_fact_single_alignment():
         answer = await _collect_answer(answer_gen)
 
         assert "10" in answer
-        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK"}
+        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK", "EXTRACTOR_DIRECT_HIT"}
         assert debug_info.get("target_field") == "SICK"
 
 
@@ -70,7 +70,7 @@ async def test_vacation_days_2025_fact_single():
 
         assert "15" in answer
         assert "20" not in answer
-        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK"}
+        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK", "EXTRACTOR_DIRECT_HIT"}
         assert debug_info.get("target_field") == "VACATION"
 
 
@@ -93,7 +93,7 @@ async def test_vacation_days_2026_fact_single():
 
         assert "20" in answer
         assert "15" not in answer
-        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK"}
+        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK", "EXTRACTOR_DIRECT_HIT"}
         assert debug_info.get("target_field") == "VACATION"
 
 
@@ -114,5 +114,5 @@ async def test_fact_single_hallucination_falls_back_to_slot_number():
         answer = await _collect_answer(answer_gen)
 
         assert "10" in answer
-        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK"}
+        assert debug_info.get("pipeline_marker") in {"EXTRACTOR_FACT_SINGLE", "EXTRACTOR_EVIDENCE_FALLBACK", "EXTRACTOR_DIRECT_HIT"}
         assert debug_info.get("fallback_from_evidence") is True

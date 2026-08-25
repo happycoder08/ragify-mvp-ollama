@@ -817,7 +817,7 @@ async def process_document_background(
     db_session, cleanup = await _acquire_db_session(db_session_factory)
     
     try:
-        await _process_document_with_db(doc_id, tenant_id, file_path, filename, db_session)
+        return await _process_document_with_db(doc_id, tenant_id, file_path, filename, db_session)
     finally:
         if cleanup:
             try:
@@ -896,6 +896,8 @@ async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str,
             except Exception as db_err:
                 logger.warning(f"Could not update document status in DB (non-fatal): {db_err}")
         
+        return num
+        
     except Exception as e:
         logger.exception(f"Background indexing failed for document {doc_id}: {e}")
         if db is not None and doc_id != -1:
@@ -907,6 +909,7 @@ async def _process_document_with_db(doc_id: int, tenant_id: str, file_path: str,
                     db.commit()
             except Exception as db_err:
                 logger.warning(f"Could not update document error status in DB (non-fatal): {db_err}")
+    return 0
 
 
 @app.post("/api/upload")
