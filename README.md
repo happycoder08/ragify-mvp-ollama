@@ -1,40 +1,50 @@
 # RAGify AI – Multi-Tenant Document Intelligence Platform
 
-A production-ready Retrieval-Augmented Generation (RAG) system for enterprise document Q&A, designed to feel like a polished internal knowledge assistant rather than a prototype.
+A production-ready Retrieval-Augmented Generation (RAG) system for enterprise document Q&A. It combines a FastAPI backend, tenant-aware access controls, document ingestion, vector retrieval, and grounding-aware generation into one coherent AI application.
 
-This project demonstrates end-to-end engineering for a real AI product: secure auth, multi-tenant isolation, document ingestion, vector search, grounding-aware generation, and a testing workflow suitable for a portfolio or production handoff.
+This project is designed to demonstrate strong end-to-end engineering: secure backend design, real document processing, retrieval quality, grounding safeguards, and a testable automation flow that can be explained clearly to recruiters and hiring managers.
 
-## Why this project matters
+## Project at a glance
 
-- Built with FastAPI and Python for a real backend service
-- Uses tenant-aware document retrieval and access boundaries
-- Supports document ingestion from PDF, DOCX, and TXT sources
-- Applies grounding constraints so answers stay tied to indexed source material
-- Includes evaluation and integration tests to validate behavior
-- Designed to be easy to run locally and easy to explain to recruiters and hiring teams
+- Backend: FastAPI + Python
+- Auth: JWT with bcrypt-based password hashing
+- Multi-tenancy: tenant-specific document access and branding
+- Vector search: ChromaDB with tenant-scoped collections
+- Retrieval: hybrid semantic + lexical ranking with grounding checks
+- Document formats: PDF, DOCX, TXT
+- AI backends: Ollama, OpenAI, and mock provider for CI/testing
+- Validation: pytest suite covering retrieval, API flows, and integration behavior
 
 ## 🏗️ Architecture
 
 ```text
-Frontend (Static UI)
-  ├─ login and tenant-aware dashboard
-  ├─ upload workflow for documents
-  └─ query interface with streaming responses
+User / Browser
+  ├─ login, tenant context, brand configuration
+  ├─ document upload and processing
+  └─ Q&A interface with streaming responses
             │
             ▼
 FastAPI Backend (main.py)
-  ├─ authentication and tenant verification
-  ├─ protected document and query APIs
-  ├─ upload/index orchestration
-  └─ grounding-aware generation pipeline
+  ├─ JWT auth and tenant verification
+  ├─ protected upload/query endpoints
+  ├─ ingestion + chunking pipeline
+  └─ grounding-aware LLM response generation
             │
-     ┌──────┼─────────┬─────────────┐
-     ▼      ▼         ▼             ▼
-PostgreSQL  ChromaDB   Ollama      Optional LLM/Mock
-Metadata    Embeddings  Chat/Embedding  Testing providers
+      ┌─────┼────────────┬────────────┐
+      ▼     ▼            ▼            ▼
+PostgreSQL  ChromaDB    Ollama    Optional OpenAI / Mock
+Metadata    Embeddings  Models    Testing provider
 ```
 
-## ✨ Core features
+## Why it stands out in a portfolio
+
+- Shows real product thinking beyond a simple chatbot
+- Includes access control, multi-tenant boundaries, and secure API patterns
+- Highlights practical AI engineering with retrieval quality and evidence checks
+- Uses a testable architecture rather than a single-script demo
+- Demonstrates production-minded patterns: config, guardrails, evaluation, and CI-ready automation
+
+## ✨ Core capabilities
 
 ### Multi-Tenancy
 - **Tenant Isolation**: Each tenant has separate document collections in ChromaDB
