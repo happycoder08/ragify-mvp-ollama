@@ -13,6 +13,7 @@ jobs:
       APP_MODE: ci
       LLM_PROVIDER: mock
       RAGIFY_MOCK: "1"
+      ALLOW_CHROMA_INDEXING_IN_MOCK: "true"
     
     steps:
     - uses: actions/checkout@v4

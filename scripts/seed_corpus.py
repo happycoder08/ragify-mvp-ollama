@@ -12,7 +12,22 @@ from app.services import ingestion, rag_service, clients
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _enable_mock_indexing_if_needed() -> None:
+    """Allow corpus seeding in CI/mock mode where indexing is otherwise skipped."""
+    is_mock_or_ci = (
+        os.getenv("RAGIFY_MOCK", "0") == "1"
+        or os.getenv("LLM_PROVIDER", "").lower() == "mock"
+        or os.getenv("APP_MODE", "").lower() == "ci"
+        or os.getenv("CI", "").lower() in {"1", "true", "yes"}
+    )
+    if is_mock_or_ci:
+        os.environ["ALLOW_CHROMA_INDEXING_IN_MOCK"] = "true"
+        logger.info("Mock/CI mode detected; enabling Chroma indexing for eval corpus seeding.")
+
+
 async def seed():
+    _enable_mock_indexing_if_needed()
     logger.info("Initializing clients...")
     clients.initialize_chroma_client()
     await clients.initialize_http_client()
