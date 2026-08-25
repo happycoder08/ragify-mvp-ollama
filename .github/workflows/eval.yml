@@ -33,8 +33,11 @@ jobs:
         
     - name: Run Evaluation
       run: |
-        make eval > eval_output.txt 2>&1
+        set +e
+        python scripts/eval_run.py > eval_output.txt 2>&1
+        status=$?
         cat eval_output.txt
+        exit $status
         
     - name: Upload Eval Results
       if: failure()
