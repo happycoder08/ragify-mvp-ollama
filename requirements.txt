@@ -3,6 +3,7 @@ uvicorn[standard]
 python-multipart
 pydantic<2
 chromadb<0.4.0
+posthog>=2.4.0,<3.0.0
 pypdf
 python-docx
 requests

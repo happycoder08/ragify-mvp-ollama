@@ -28,7 +28,8 @@ def initialize_chroma_client():
         chroma_client = chromadb.Client(
             Settings(
                 chroma_db_impl="duckdb+parquet",
-                persist_directory=VECTOR_DIR
+                persist_directory=VECTOR_DIR,
+                anonymized_telemetry=False
             )
         )
         logger.info("ChromaDB client initialized successfully")
