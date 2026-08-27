@@ -17,7 +17,7 @@ Essential files to inspect
 
 Developer workflows and commands
 - Install dependencies:
-  - `pip install -r requirements.txt`
+  - `pip install -r apps/backend/requirements.txt`
 - Run local Ollama (outside this repo):
   - Ensure Ollama daemon is running and reachable at `http://localhost:11434`.
   - Pull required models before running the app: `ollama pull nomic-embed-text` and `ollama pull llama3`.
@@ -45,7 +45,7 @@ Examples to reference when editing
 
 Notes for Copilot-style suggestions
 - Prefer minimal, focused edits: adjust chunk sizes or embedding calls where the logic is centralized.
-- When suggesting new dependencies, reference `requirements.txt` and include why (e.g., sentence tokenizer for smarter chunking).
+- When suggesting new dependencies, reference `apps/backend/requirements.txt` and include why (e.g., sentence tokenizer for smarter chunking).
 - Do not change the UI/backend contract: the frontend expects `/api/upload` and `/api/query` shapes as implemented in `main.py`.
 
 If anything is unclear or you want me to expand any section (run commands, add examples, or include troubleshooting scripts), say which part to iterate on.
