@@ -1,4 +1,5 @@
 import { render, fireEvent, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 import EvidencePanel from '../EvidencePanel';
 
 describe('EvidencePanel collapse/expand', () => {
@@ -27,5 +28,20 @@ describe('EvidencePanel collapse/expand', () => {
   it('renders "No evidence returned." when evidence is empty and not refused', () => {
     render(<EvidencePanel evidence={[]} query="" refused={false} sources={[]} />);
     expect(screen.getByText('No evidence returned.')).toBeTruthy();
+  });
+
+  it('transitions between refusal and evidence states without hook-order errors', () => {
+    const evidence = [{ snippet: 'Policy evidence', chunk_id: 'chunk-1' }];
+    const view = render(<EvidencePanel evidence={[]} query="" refused={true} sources={[]} />);
+
+    expect(screen.getByText('No evidence available')).toBeInTheDocument();
+
+    view.rerender(<EvidencePanel evidence={evidence} query="policy" refused={false} sources={[]} />);
+    expect(screen.getByText('Evidence (1)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
+    expect(view.container.querySelector('.evidence-snippet')).toHaveTextContent('Policy evidence');
+
+    view.rerender(<EvidencePanel evidence={[]} query="policy" refused={true} sources={[]} />);
+    expect(screen.getByText('No evidence available')).toBeInTheDocument();
   });
 });

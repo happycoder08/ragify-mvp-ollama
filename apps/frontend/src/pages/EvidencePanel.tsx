@@ -127,6 +127,24 @@ function EvidenceItemComponent({ evidence, index, query }: EvidenceItemComponent
 }
 
 export default function EvidencePanel({ evidence, query, refused, sources }: EvidencePanelProps) {
+  // Keep hooks unconditional so refusal and empty-state transitions are safe.
+  const [showAll, setShowAll] = useState(false);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const prevScrollTopRef = useRef<number | null>(null);
+  const prevScrollElementRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (prevScrollElementRef.current && prevScrollTopRef.current != null) {
+      const elem = prevScrollElementRef.current;
+      const top = prevScrollTopRef.current;
+      requestAnimationFrame(() => {
+        try { elem.scrollTop = top; } catch {};
+        prevScrollTopRef.current = null;
+        prevScrollElementRef.current = null;
+      });
+    }
+  }, [showAll]);
+
   // Demo-safe validation: check for malformed evidence items
   const malformed = evidence.some(ev => !ev.snippet || !ev.chunk_id);
   if (malformed && import.meta.env.DEV) {
@@ -158,12 +176,6 @@ export default function EvidencePanel({ evidence, query, refused, sources }: Evi
     );
   }
 
-  // Collapse/expand state for evidence list
-  const [showAll, setShowAll] = useState(false);
-  const sectionRef = useRef<HTMLDivElement | null>(null);
-  const prevScrollTopRef = useRef<number | null>(null);
-  const prevScrollElementRef = useRef<HTMLElement | null>(null);
-
   const getScrollableAncestor = (el: HTMLElement | null): HTMLElement | null => {
     let cur: HTMLElement | null = el;
     while (cur) {
@@ -181,19 +193,6 @@ export default function EvidencePanel({ evidence, query, refused, sources }: Evi
     }
     setShowAll(s => !s);
   };
-
-  // Restore scroll position after toggle to avoid jumping
-  useEffect(() => {
-    if (prevScrollElementRef.current && prevScrollTopRef.current != null) {
-      const elem = prevScrollElementRef.current;
-      const top = prevScrollTopRef.current;
-      requestAnimationFrame(() => {
-        try { elem.scrollTop = top; } catch {};
-        prevScrollTopRef.current = null;
-        prevScrollElementRef.current = null;
-      });
-    }
-  }, [showAll]);
 
   // Deduplicate sources by filename
   const uniqueSources = sources ? Array.from(

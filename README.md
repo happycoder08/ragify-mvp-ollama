@@ -74,6 +74,14 @@ Run backend tests from the root with:
 pytest apps/backend
 ```
 
+Run the live upload/index/query regression while the backend is running:
+
+```powershell
+python apps/backend/scripts/e2e_upload_query.py
+```
+
+For deterministic local responses, start the backend with `LLM_PROVIDER=mock`.
+
 ## Frontend
 
 The frontend is a React, TypeScript, and Vite app. See [apps/frontend/README.md](apps/frontend/README.md) for UI behavior and testing details.
