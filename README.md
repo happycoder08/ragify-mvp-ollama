@@ -540,28 +540,6 @@ from app.database import init_db
 init_db()  # Creates all tables
 ```
 
-## 📚 Additional Documentation
-
-- [PHASE1_SUMMARY.md](PHASE1_SUMMARY.md) - Complete Phase 1 implementation details
-- [TESTING_GUIDE.md](TESTING_GUIDE.md) - Comprehensive testing manual with 50+ test cases
-- [SETUP_WITHOUT_DOCKER.md](SETUP_WITHOUT_DOCKER.md) - Alternative setup options
-- [CI_TESTING.md](CI_TESTING.md) - CI/CD testing guide with mock provider
-- [GROUNDING_GATE_SUMMARY.md](GROUNDING_GATE_SUMMARY.md) - Evidence validation system
-- [SSE_IMPLEMENTATION.md](SSE_IMPLEMENTATION.md) - Streaming response implementation
-- [ASYNC_INGESTION.md](ASYNC_INGESTION.md) - Document processing pipeline
-- [EMBEDDER_IMPLEMENTATION.md](EMBEDDER_IMPLEMENTATION.md) - Embedding and retrieval system
-- [BRANCH_STATUS.md](BRANCH_STATUS.md) - Current development status
-- [CONVERSATION_SUPPORT.md](CONVERSATION_SUPPORT.md) - Multi-turn conversation features
-- [GUARDRAILS.md](GUARDRAILS.md) - Safety and quality controls
-
-## 🤝 Contributing
-
-1. Create a feature branch from `master`
-2. Make your changes
-3. Test thoroughly (see TESTING_GUIDE.md)
-4. Submit a pull request
-
-> The repository keeps historical project notes in the archive folder for reference, while the default branch is kept focused on the clean, maintainable product experience.
 
 ## 📄 License
 
