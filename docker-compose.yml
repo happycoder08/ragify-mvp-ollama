@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ragify
+      POSTGRES_PASSWORD: ragify
+      POSTGRES_DB: ragify_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragify -d ragify_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      RAGIFY_MODE: demo
+      LLM_PROVIDER: ollama
+      DATABASE_URL: postgresql://ragify:ragify@postgres:5432/ragify_db
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      ALLOW_ORIGINS: http://localhost:5173
+      CHROMA_DB_IMPL: duckdb+parquet
+      PERSIST_DIRECTORY: /app/vectorstore
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ragify_vectorstore:/app/vectorstore
+      - backend_uploads:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_DEMO_MODE: "true"
+        VITE_API_URL: ""
+    ports:
+      - "5173:80"
+    environment:
+      VITE_DEMO_MODE: "true"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  ragify_vectorstore:
+  backend_uploads:

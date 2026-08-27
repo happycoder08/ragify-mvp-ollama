@@ -3,13 +3,15 @@ FROM node:lts AS build
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci
+COPY package.json package-lock.json ./
+RUN npm install --no-audit --no-fund
 
 COPY . .
 
 ARG VITE_API_URL
 ENV VITE_API_URL=$VITE_API_URL
+ARG VITE_DEMO_MODE=false
+ENV VITE_DEMO_MODE=$VITE_DEMO_MODE
 
 RUN npm run build
 
