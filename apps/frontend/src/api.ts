@@ -11,6 +11,13 @@ import type {
   UploadResponse,
   ErrorResponse,
   PurgeResponse,
+  ConversationCreate,
+  Conversation,
+  ConversationListResponse,
+  MessageCreate,
+  Message,
+  DeleteConversationResponse,
+  GuardrailConfig,
 } from './contracts/types';
 /**
  * Purge all indexed documents
@@ -22,9 +29,72 @@ export async function purgeDocuments(): Promise<PurgeResponse> {
   });
 }
 
+/**
+ * Get the authenticated tenant's guardrail configuration.
+ * GET /api/guardrails
+ */
+export async function getGuardrails(): Promise<GuardrailConfig> {
+  return apiFetch<GuardrailConfig>('/api/guardrails', { method: 'GET' });
+}
+
+/**
+ * Create a conversation for the authenticated tenant.
+ * POST /api/conversations
+ */
+export async function createConversation(payload: ConversationCreate = {}): Promise<Conversation> {
+  return apiFetch<Conversation>('/api/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * List conversations for the authenticated tenant.
+ * GET /api/conversations?limit=<limit>
+ */
+export async function listConversations(limit = 50): Promise<ConversationListResponse> {
+  return apiFetch<ConversationListResponse>(`/api/conversations?limit=${encodeURIComponent(limit)}`, {
+    method: 'GET',
+  });
+}
+
+/**
+ * Get one conversation and its messages.
+ * GET /api/conversations/{conversation_id}
+ */
+export async function getConversation(conversationId: number): Promise<Conversation> {
+  return apiFetch<Conversation>(`/api/conversations/${conversationId}`, { method: 'GET' });
+}
+
+/**
+ * Add a message to a conversation.
+ * POST /api/conversations/{conversation_id}/messages
+ */
+export async function addConversationMessage(
+  conversationId: number,
+  payload: MessageCreate,
+): Promise<Message> {
+  return apiFetch<Message>(`/api/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * Delete a conversation.
+ * DELETE /api/conversations/{conversation_id}
+ */
+export async function deleteConversation(conversationId: number): Promise<DeleteConversationResponse> {
+  return apiFetch<DeleteConversationResponse>(`/api/conversations/${conversationId}`, {
+    method: 'DELETE',
+  });
+}
+
 // Get API base URL from environment variable
 // Defaults to localhost for local dev
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 /**
  * Get stored JWT token from localStorage

@@ -27,6 +27,7 @@ export interface QueryRequest {
   top_k?: number;
   mode?: "fast" | "full";
   conversation_id?: number;
+  conversation_history?: Array<{ role: string; content: string }>;
   doc_ids?: number[];
   debug?: number; // 0 = no debug, 1 = basic, 2 = verbose
   stream?: boolean;
@@ -38,6 +39,7 @@ export interface EvidenceItem {
   heading?: string | null;
   doc_id?: number | null;
   anchor_type?: "WIFI" | "TIME" | null;
+  anchor_detected?: boolean;
 }
 
 export interface SourceItem {
@@ -66,6 +68,29 @@ export interface DebugInfo {
   selected_headings?: string[] | null;
   context_text_chars?: number | null;
   context_chunks_count?: number | null;
+  retrieved_chunks_top20?: unknown[] | null;
+  context_length?: number | null;
+  refused?: boolean | null;
+  refusal_reason?: string | null;
+  failed_check?: string | null;
+  support_score?: number | null;
+  gate_evidence_lines_count?: number | null;
+  debug_trace?: Record<string, unknown> | null;
+  retrieved_top?: Array<Record<string, unknown>> | null;
+  invariant_violation?: boolean | null;
+  refusal_phrase_in_non_refusal_answer?: boolean | null;
+  answer_schema?: string | null;
+  empty_answer_invariant_tripped?: boolean | null;
+  fallback_from_evidence?: boolean | null;
+  pipeline_marker?: string | null;
+  needs_clarification?: boolean | null;
+  clarification?: ClarificationPayload | null;
+}
+
+export interface ClarificationPayload {
+  type: string;
+  question: string;
+  options?: string[] | null;
 }
 
 export interface QueryFinalResponse {
@@ -74,8 +99,13 @@ export interface QueryFinalResponse {
   refusal_reason?: string | null;
   evidence: EvidenceItem[];
   sources: SourceItem[];
+  pipeline_marker: string;
+  needs_clarification?: boolean | null;
+  clarification?: ClarificationPayload | null;
   debug_info?: DebugInfo | null;
 }
+
+export type QueryResponse = QueryFinalResponse;
 
 // SSE streaming events
 export type SSEEvent =
@@ -90,10 +120,12 @@ export type SSEEvent =
 export interface DocumentRecord {
   id: number;
   filename: string;
-  status: "pending" | "indexed" | "failed";
+  status: "pending" | "indexing" | "indexed" | "failed";
   created_at: string; // ISO datetime
   updated_at: string; // ISO datetime
   error_message?: string | null;
+  tenant_id?: string;
+  file_path?: string;
 }
 
 export interface UploadResponse {
@@ -149,9 +181,10 @@ export interface Message {
 export interface Conversation {
   id: number;
   tenant_id: string;
-  title: string;
+  title: string | null;
   created_at: string; // ISO datetime
   updated_at: string; // ISO datetime
+  message_count: number;
   messages?: Message[]; // Only included when fetching single conversation
 }
 
@@ -185,10 +218,13 @@ export interface SystemConfigResponse {
 
 export interface GuardrailConfig {
   max_file_size_mb: number;
-  max_files_per_upload: number;
+  max_files_per_request: number;
   allowed_extensions: string[];
-  rate_limit_requests_per_hour: number;
-  rate_limit_mb_per_hour: number;
+  max_requests_per_minute: number;
+  max_requests_per_hour: number;
+  max_upload_mb_per_hour: number;
+  llm_timeout_seconds: number;
+  upload_timeout_seconds: number;
 }
 
 export interface RateLimitStatus {
