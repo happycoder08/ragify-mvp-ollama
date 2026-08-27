@@ -1,60 +1,10 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Editor directories and files
-.vscode/
-.idea/
-*.sublime-workspace
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Application artifacts
-uploads/
-vectorstore/
-
-# Build/test
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Byte-compiled / optimized / DLL files
-*.so
-*.dylib
-
-# Local env files
-.env
-env.*
-
-# Logs
+# Root tooling
+node_modules/
 *.log
 *.logs
-backend.logs
+.env
+.env.*
+!.env.example
 
-# Local debug and scratch scripts
-debug_*.py
-check_*.py
-quick_*.py
-simple_*.py
-inspect_*.py
-get_chunk_text.py
-
-# Temporary test output and artifacts
-test_output.txt
-query_output.txt
-test_policy.txt
-smoke_run.txt
-simple_test.txt
-debug.json
-final.json
-
-
-vectorstore_test/
+# Build output
+dist/

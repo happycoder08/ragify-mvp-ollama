@@ -1,0 +1,22 @@
+{
+  "answer": "The document does not specify this.",
+  "refused": false,
+  "evidence": [
+    {
+      "snippet": "...HEALTH INSURANCE is provided to employees...",
+      "chunk_id": "20_Employee_Onboarding_Guide_1.txt_30",
+      "doc_id": 20
+    }
+  ],
+  "sources": [
+    {
+      "filename": "Employee_Onboarding_Guide_1.txt"
+    }
+  ],
+  "debug_info": {
+    "evidence_count": 1,
+    "sources_count": 1,
+    "selected_count": 1,
+    "request_id": "ee442951-de1e-4180-aace-f221ffdffad1"
+  }
+}

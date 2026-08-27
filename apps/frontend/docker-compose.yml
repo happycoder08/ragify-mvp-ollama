@@ -1,0 +1,12 @@
+version: '3.9'
+
+services:
+  ragify-frontend:
+    build:
+      context: .
+      args:
+        # Points to the Backend running on your machine's port 8000
+        VITE_API_URL: http://localhost:8000
+    container_name: ragify-frontend
+    ports:
+      - "3000:80"

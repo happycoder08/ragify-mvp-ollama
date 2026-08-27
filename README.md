@@ -1,284 +1,95 @@
-# RAGify AI – Multi-Tenant Document Intelligence Platform
+# RAGify AI
 
-RAGify AI is a production-style Retrieval-Augmented Generation application built for enterprise document Q&A. The platform enables users to upload internal knowledge documents, retrieve the most relevant passages, and ask grounded questions with answers tied back to the original source material.
+RAGify is a full-stack document question-answering application. The repository is organized as a small monorepo with a FastAPI backend and a React/Vite frontend.
 
-Built with FastAPI, PostgreSQL, ChromaDB, and LLM providers such as Ollama and OpenAI, this project demonstrates full-stack AI engineering in a practical business context. It includes multi-tenant access controls, document ingestion pipelines, response grounding safeguards, and a test suite designed to validate retrieval quality and end-to-end system behavior.
-
-This is a portfolio-ready project that highlights the intersection of backend engineering, AI systems design, and product thinking: secure APIs, real retrieval workflows, guardrails, evaluation, and a maintainable architecture that is easy to explain and extend.
-
-## Project at a glance
-
-- Backend: FastAPI + Python
-- Auth: JWT with bcrypt-based password hashing
-- Multi-tenancy: tenant-specific document access and branding
-- Vector search: ChromaDB with tenant-scoped collections
-- Retrieval: hybrid semantic + lexical ranking with grounding checks
-- Document formats: PDF, DOCX, TXT
-- AI backends: Ollama, OpenAI, and mock provider for CI/testing
-- Validation: pytest suite covering retrieval, API flows, and integration behavior
-
-## 🏗️ Architecture
+## Repository Structure
 
 ```text
-User / Browser
-  ├─ login, tenant context, brand configuration
-  ├─ document upload and processing
-  └─ Q&A interface with streaming responses
-            │
-            ▼
-FastAPI Backend (main.py)
-  ├─ JWT auth and tenant verification
-  ├─ protected upload/query endpoints
-  ├─ ingestion + chunking pipeline
-  └─ grounding-aware LLM response generation
-            │
-      ┌─────┼────────────┬────────────┐
-      ▼     ▼            ▼            ▼
-PostgreSQL  ChromaDB    Ollama    Optional OpenAI / Mock
-Metadata    Embeddings  Models    Testing provider
+apps/
+  backend/       FastAPI API, RAG pipeline, tests, and legacy static files
+  frontend/      React + TypeScript + Vite application
+package.json     Root development orchestration scripts
 ```
 
-## What is unique about RAGify
+The frontend development server proxies `/api` and `/health` to the backend at `http://localhost:8000`.
 
-- Shows real product thinking beyond a simple chatbot
-- Includes access control, multi-tenant boundaries, and secure API patterns
-- Highlights practical AI engineering with retrieval quality and evidence checks
-- Uses a testable architecture rather than a single-script demo
-- Demonstrates production-minded patterns: config, guardrails, evaluation, and CI-ready automation
+## Prerequisites
 
-## ✨ Core capabilities
-
-### Multi-Tenancy
-- **Tenant Isolation**: Each tenant has separate document collections in ChromaDB
-- **Custom Branding**: Configurable colors, logos, and titles per tenant
-- **Access Control**: Users can only access their tenant's documents
-
-### Authentication & Security
-- **JWT Tokens**: Secure authentication with 24-hour token expiry
-- **Password Hashing**: bcrypt with 12 rounds for secure password storage
-- **Protected Endpoints**: All document operations require authentication
-
-### Advanced RAG Capabilities
-- **Intelligent Question Classification**: Automatic detection of broad vs. specific questions
-- **Context Expansion**: Adjacent chunk inclusion for comprehensive answers (e.g., "First Day" checklists)
-- **Diverse Retrieval**: MMR (Maximal Marginal Relevance) selection for balanced context
-- **Evidence-Based Responses**: Strict citation requirements with chunk ID references
-- **Deterministic Extractors**: Specialized handling for common questions:
-  - Badge pickup locations
-  - Manager/supervisor names
-  - Reception/front desk locations
-- **Hybrid Scoring**: Combines lexical overlap and semantic similarity for optimal retrieval
-- **Coverage Assurance**: Minimum context thresholds (1500+ chars for broad questions)
-- **Fallback Query Rewriting**: Automatic query enhancement for better document matching
-
-### Document Processing
-- **Multi-Format Support**: PDF, DOCX, and TXT file processing
-- **Smart Chunking**: Character-based segmentation with configurable overlap (800 chars + 200 overlap)
-- **Metadata Preservation**: Header extraction, source tracking, and chunk indexing
-- **Upload Tracking**: PostgreSQL records with indexing status and error handling
-
-### AI & Response Features
-- **Streaming Responses**: Real-time answer generation with source attribution
-- **Multiple LLM Providers**: Ollama (local), OpenAI (cloud), Mock (testing)
-- **Grounding Validation**: Evidence verification with time/numeric anchor detection
-- **Context-Aware Generation**: Answers strictly based on indexed documents only
-- **Debug Capabilities**: Detailed retrieval and processing information for troubleshooting
-
-### Conversations & History
-- **Conversation Threads**: Conversations persisted per tenant with titles and timestamps
-- **Message History**: Both user and assistant messages stored with optional source metadata
-- **Context Reuse**: `/api/query` can take a `conversation_id` and reuse the last N turns
-- **Cleanup APIs**: Endpoints to list, delete, and inspect conversation history per tenant
-
-### Guardrails & Rate Limiting
-- **Upload Guardrails**: Limits on file size, count, and allowed extensions per tenant
-- **Rate Limiting**: Per-tenant request and upload-size quotas with `/api/rate-limit-status`
-- **Grounding Gate**: Configurable thresholds to require sufficient evidence before answering
-- **Tenant-Specific Policies**: Guardrail config retrieved via `/api/guardrails`
-
-### Quality Assurance
-- **Comprehensive Testing**: 50+ test cases covering all major functionality
-- **Mock Provider**: Deterministic responses for CI/CD pipelines
-- **Integration Testing**: End-to-end validation of upload → query → response pipeline
-- **Performance Validation**: Context length and retrieval quality assertions
-
-## 🚀 Quick Start
-
-### Prerequisites
 - Python 3.11+
-- PostgreSQL (or use without database - see [SETUP_WITHOUT_DOCKER.md](SETUP_WITHOUT_DOCKER.md))
-- Ollama with `nomic-embed-text` and `llama3` models
+- Node.js and npm
+- PostgreSQL on `localhost:5432` (required for document uploads and document lists)
+- Ollama with `nomic-embed-text` and `llama3.2:1b` available
 
-### 1. Install Dependencies
+To start PostgreSQL with Docker, start Docker Desktop and run:
 
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Set Up PostgreSQL (Optional but Recommended)
-
-**Option A: Using Docker**
-```bash
+```powershell
 docker run --name ragify-postgres -e POSTGRES_USER=ragify -e POSTGRES_PASSWORD=ragify -e POSTGRES_DB=ragify_db -p 5432:5432 -d postgres:15
 ```
 
-**Option B: Native Installation**
-See [SETUP_WITHOUT_DOCKER.md](SETUP_WITHOUT_DOCKER.md) for detailed instructions.
+For native PostgreSQL setup, see [apps/backend/SETUP_WITHOUT_DOCKER.md](apps/backend/SETUP_WITHOUT_DOCKER.md).
 
-### 3. Set Up Ollama
+## Install
 
-```bash
-# Pull required models
-ollama pull nomic-embed-text
-ollama pull llama3.2:1b  # or `llama3`
+From the repository root:
 
-# Verify Ollama is running
-curl http://localhost:11434/api/tags
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -r apps/backend/requirements.txt
+npm install
+Push-Location apps/frontend
+npm install
+Pop-Location
 ```
 
-### 4. Configure Environment (Optional)
+Create `apps/backend/.env` when custom configuration is needed. Start with [apps/backend/.env.example](apps/backend/.env.example).
 
-Create `.env` file:
-```bash
-DATABASE_URL=postgresql://ragify:ragify@localhost:5432/ragify_db
-JWT_SECRET_KEY=your-secret-key-change-in-production
-JWT_ALGORITHM=HS256
-JWT_EXPIRY_HOURS=24
+## Run Both Apps
+
+From the repository root:
+
+```powershell
+npm run dev
 ```
 
-### 5. Start the Server
+This starts:
 
-```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+- Backend: `http://localhost:8000`
+- Frontend: `http://localhost:5173`
+
+The root scripts are defined in [package.json](package.json):
+
+- `npm run dev:backend` starts Uvicorn from `apps/backend`, preserving relative storage paths.
+- `npm run dev:frontend` starts Vite from `apps/frontend`.
+- `npm run dev` runs both services with `concurrently`.
+
+Open `http://localhost:5173` to use the React application. The backend also exposes its legacy static pages under `http://localhost:8000/static/`.
+
+## Backend
+
+The backend provides authentication, document ingestion, tenant isolation, ChromaDB retrieval, grounded answers, and streaming responses. See [apps/backend/README.md](apps/backend/README.md) for API capabilities and backend-specific details.
+
+Run backend tests from the root with:
+
+```powershell
+pytest apps/backend
 ```
 
-### 6. Access the Application
+## Frontend
 
-Open http://localhost:8000 in your browser.
+The frontend is a React, TypeScript, and Vite app. See [apps/frontend/README.md](apps/frontend/README.md) for UI behavior and testing details.
 
-## 👥 Default Login Credentials
-
-| Tenant | Username | Password | Brand Color | Description |
-|--------|----------|----------|-------------|-------------|
-| Default | `demo` | `demo123` | Blue (#3b82f6) | Default tenant for general use |
-| ACME Corp | `acme_admin` | `acme123` | Red (#ef4444) | ACME Corporation tenant |
-| Finance Co | `finance_user` | `finance123` | Green (#10b981) | Finance Company tenant |
-
-**⚠️ Security Warning**: Change these credentials in production! Update `app/auth.py` with secure passwords.
-
-## 📡 API Endpoints
-
-### Public Endpoints
-- `POST /api/login` - Authenticate user and get JWT token
-- `GET /health` - Basic health check (status, mock mode, active RAGIFY mode)
-- `GET /api/system/config` - Active RAG configuration (mode, tokens, top_k, provider)
-- `GET /` - Serves main SPA (static frontend)
-
-### Protected Endpoints (Require JWT)
-- `GET /api/config` - Get tenant-specific branding/config
-- `GET /api/guardrails` - Get tenant-specific guardrail limits (upload and query constraints)
-- `GET /api/rate-limit-status` - Current rate limit usage for the tenant
-- `GET /api/debug` - High-level runtime debug info (providers, collection stats, recent docs)
-- `GET /api/health/deps` - Dependency health (Ollama + Chroma) for the current tenant
-- `POST /api/upload` - Upload and index documents (PDF, DOCX, TXT) with background processing
-- `POST /api/query` - Advanced document querying with intelligent retrieval
-  - **Broad Question Handling**: Automatic context expansion for comprehensive questions
-  - **Evidence Citations**: Responses include chunk IDs and evidence snippets
-  - **Streaming Response**: Server-sent events (`event: token` / `event: final`)
-  - **Debug Mode**: Optional structured `debug_info` with retrieval and grounding details
-- `GET /api/documents` - List all documents for current tenant with status tracking
-- `GET /api/documents/{doc_id}/status` - Status of a single document (pending/indexed/failed)
-- `POST /api/documents/{doc_id}/reindex` - Re-run indexing pipeline for one document
-- `POST /api/documents/purge` - Delete all tenant documents (metadata + files) and reset vectors
-- `POST /api/reset` - Reset the current tenant's vector store (destructive)
-- **Conversations API**:
-  - `POST /api/conversations` - Create a conversation
-  - `GET /api/conversations` - List recent conversations for the tenant
-  - `GET /api/conversations/{conversation_id}` - Get conversation with messages
-  - `POST /api/conversations/{conversation_id}/messages` - Append a message
-  - `DELETE /api/conversations/{conversation_id}` - Delete a conversation
-- **Debug Utilities**:
-  - `GET /api/debug/find_chunks` - Search indexed chunks for a substring (per-tenant)
-- **Demo Utilities (demo mode only)**:
-  - `POST /api/demo-verify` - Run a small suite of demo queries to verify evidence coverage
-
-### Response Formats
-
-#### Query Response
-```json
-{
-  "answer": "Streaming text response with evidence-based information...",
-  "refused": false,
-  "refusal_reason": null,
-  "sources": [
-    {
-      "doc_id": 1,
-      "filename": "document1.pdf",
-      "chunk_id": "doc1_chunk_5"
-    }
-  ],
-  "evidence": [
-    {
-      "snippet": "Relevant text excerpt...",
-      "chunk_id": "doc1_chunk_5",
-      "heading": "First Day Checklist",
-      "doc_id": 1,
-      "anchor_type": "TIME"
-    }
-  ],
-  "debug_info": {
-    "retrieved_count": 25,
-    "selected_count": 8,
-    "context_length": 2100,
-    "collection_name": "documents_default__MockEmbedder__384"
-  }
-}
-```
- 
-### Other
-- `GET /health` - Basic health check
-- `GET /` - Main application UI
-
-## 🗂️ Project Structure
-
-```
-ragify-mvp-ollama/
-├── app/
-│   ├── __init__.py
-│   ├── config.py              # Configuration and paths
-│   ├── auth.py                # JWT authentication system
-│   ├── database.py            # PostgreSQL connection
-│   ├── models.py              # SQLAlchemy models
-│   ├── tenant_config.py       # Tenant configurations
-│   └── services/
-│       ├── ingestion.py       # Document processing & chunking
-│       └── rag_service.py     # Advanced multi-tenant RAG engine
-│           ├── ChunkHit dataclass    # Document chunk representation
-│           ├── MMR selection         # Diverse retrieval algorithm
-│           ├── Broad question detection
-│           ├── Evidence extraction   # Citation and grounding
-│           ├── Deterministic extractors
-│           └── Hybrid scoring        # Lexical + semantic ranking
-├── static/
-│   ├── login.html             # Authentication page
-│   └── index.html             # Main application UI
-├── main.py                    # FastAPI application with streaming
-├── requirements.txt           # Python dependencies
-├── pytest.ini                 # Test configuration
-├── test_*.py                  # 50+ comprehensive test files
-├── *.md                       # Documentation files
-└── CI_TESTING.md              # CI/CD testing guide
+```powershell
+npm --prefix apps/frontend run build
+npm --prefix apps/frontend run test -- --run
 ```
 
-### Key Components
+## External Services
 
-#### RAG Service (`rag_service.py`)
-- **Question Classification**: Broad vs. specific question detection
-- **Retrieval Pipeline**: Hybrid scoring with lexical overlap + embeddings
-- **Selection Algorithms**: MMR for diversity, adjacent chunk expansion
-- **Evidence Processing**: Citation tracking, anchor type detection
-- **Response Generation**: Context-aware LLM prompting with strict evidence requirements
+- PostgreSQL stores application metadata, authentication, and document records.
+- ChromaDB persists embeddings under `apps/backend/vectorstore/`.
+- Ollama provides embeddings and chat responses at `http://localhost:11434`.
 
+## Reference Documentation
 #### Document Ingestion (`ingestion.py`)
 - **Format Support**: PDF, DOCX, TXT processing
 - **Chunking Strategy**: Character-based with configurable overlap
@@ -576,3 +387,4 @@ This project is part of the RAGify MVP and is intended for demonstration and edu
 - **Deterministic Extractors**: Specialized handling for common queries
 - **Anchor Detection**: Time and numeric pattern recognition
 - **Coverage Gates**: Quality assurance for response completeness
+When PostgreSQL is unavailable, the backend starts in degraded mode. Health checks and some existing Chroma queries may work, but document uploads and document listing will not.
