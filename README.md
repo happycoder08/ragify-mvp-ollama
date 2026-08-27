@@ -121,15 +121,15 @@ RAGify includes a comprehensive test suite with 50+ test cases covering all majo
 pytest
 
 # Run specific test categories
-pytest test_rag_pipeline.py -v          # RAG pipeline validation
-pytest test_grounding_gate.py -v        # Evidence verification
-pytest test_integration.py -v           # End-to-end testing
+pytest apps/backend/test_rag_pipeline.py -v          # RAG pipeline validation
+pytest apps/backend/test_grounding_gate.py -v        # Evidence verification
+pytest apps/backend/test_integration.py -v           # End-to-end testing
 
 # Run with coverage
-pytest --cov=app --cov-report=html
+pytest --cov=apps/backend/app --cov-report=html
 
 # Run mock tests (no external dependencies)
-LLM_PROVIDER=mock pytest test_integration.py -v
+LLM_PROVIDER=mock pytest apps/backend/test_integration.py -v
 ```
 
 ### Test Coverage Areas
@@ -143,7 +143,7 @@ LLM_PROVIDER=mock pytest test_integration.py -v
 - ✅ Authentication and authorization
 - ✅ Error handling and edge cases
 
-See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions.
+See [apps/backend/TESTING_GUIDE.md](apps/backend/TESTING_GUIDE.md) for comprehensive testing instructions.
 
 ## 🔧 Configuration
 
@@ -151,7 +151,7 @@ See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAGIFY_MODE` | `demo` | Global mode: `dev`, `demo`, or `prod` (see CONFIG_GUIDE.md) |
+| `RAGIFY_MODE` | `demo` | Global mode: `dev`, `demo`, or `prod` (see [CONFIG_GUIDE.md](apps/backend/archive/legacy-notes/CONFIG_GUIDE.md)) |
 | `DATABASE_URL` | `postgresql://ragify:ragify@localhost:5432/ragify_db` | PostgreSQL connection string |
 | `JWT_SECRET_KEY` | `your-secret-key-change-in-production` | Secret key for JWT signing |
 | `JWT_ALGORITHM` | `HS256` | JWT algorithm |
@@ -169,14 +169,14 @@ See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions.
 
 ### Modes (dev / demo / prod)
 
-RAGify centralizes most tuning in `RAGIFY_MODE` (see [CONFIG_GUIDE.md](CONFIG_GUIDE.md)):
+RAGify centralizes most tuning in `RAGIFY_MODE` (see [CONFIG_GUIDE.md](apps/backend/archive/legacy-notes/CONFIG_GUIDE.md)):
 - **dev**: full features, verbose logging, generous limits (unlimited tokens, more chunks), best for development and debugging.
 - **demo** (default): optimized for fast, safe responses (smaller token budget, fewer chunks, stricter thresholds) for live demos.
 - **prod**: balanced quality/speed with tighter defaults, reranking enabled by default, suitable for production.
 
 You can inspect the active config at runtime via `GET /api/system/config`, and still override specific settings with env vars (for example `LLM_PROVIDER`, `LLM_MODEL`, or `RAGIFY_OLLAMA_TIMEOUT`).
 
-For a concise, up-to-date summary of each mode, usage examples, and best practices, see [CONFIG_GUIDE.md](CONFIG_GUIDE.md).
+For a concise, up-to-date summary of each mode, usage examples, and best practices, see [CONFIG_GUIDE.md](apps/backend/archive/legacy-notes/CONFIG_GUIDE.md).
 
 ### LLM Provider Options
 
@@ -197,25 +197,25 @@ RAGify supports multiple LLM backends via the `LLM_PROVIDER` environment variabl
   - Returns deterministic keyword-based responses
   - Supports grounded and ungrounded modes (`MOCK_UNGROUNDED=true`)
   - Best for: CI/CD pipelines, integration tests
-  - See [CI Testing Guide](CI_TESTING.md) for details
+  - See [CI Testing Guide](apps/backend/archive/legacy-notes/CI_TESTING.md) for details
 
 **Example:**
 ```bash
 # Use Ollama (default)
-LLM_PROVIDER=ollama uvicorn main:app --reload
+LLM_PROVIDER=ollama npm run dev:backend
 
 # Use OpenAI
 export OPENAI_API_KEY=sk-...
-LLM_PROVIDER=openai uvicorn main:app --reload
+LLM_PROVIDER=openai npm run dev:backend
 
 # Use mock provider for testing
-LLM_PROVIDER=mock pytest test_integration.py -v
+LLM_PROVIDER=mock pytest apps/backend/test_integration.py -v
 ```
 
 
 ### Adding New Tenants
 
-Edit `app/tenant_config.py`:
+Edit `apps/backend/app/tenant_config.py`:
 
 ```python
 TENANT_CONFIGS = {
@@ -229,7 +229,7 @@ TENANT_CONFIGS = {
 }
 ```
 
-Then add user in `app/auth.py`:
+Then add user in `apps/backend/app/auth.py`:
 
 ```python
 USERS_DB = {
@@ -300,7 +300,7 @@ CREATE INDEX idx_status ON documents(status);
 ## 🔐 Security Considerations
 
 ### Production Deployment Checklist
-- [ ] Change all default passwords in `app/auth.py`
+- [ ] Change all default passwords in `apps/backend/app/auth.py`
 - [ ] Set strong `JWT_SECRET_KEY` (min 32 characters)
 - [ ] Use environment variables for all secrets
 - [ ] Enable HTTPS/TLS for all connections
@@ -334,20 +334,20 @@ curl http://localhost:11434/api/tags
 ### Authentication Issues
 - Clear browser localStorage and try logging in again
 - Check JWT token expiry (default 24 hours)
-- Verify credentials in `app/auth.py`
+- Verify credentials in `apps/backend/app/auth.py`
 
 ## 📝 Development
 
 ### Running in Mock Mode (No External Dependencies)
 ```bash
-export RAGIFY_MOCK=1
-uvicorn main:app --reload
+$env:RAGIFY_MOCK="1"
+npm run dev:backend
 ```
 
 ### Database Migrations
 ```python
 # In Python shell
-from app.database import init_db
+from apps.backend.app.database import init_db
 init_db()  # Creates all tables
 ```
 
@@ -363,7 +363,7 @@ This project is part of the RAGify MVP and is intended for demonstration and edu
 - **Vector DB**: ChromaDB <0.4.0 with tenant-scoped collections
 - **AI Models**: Ollama (nomic-embed-text, llama3) + OpenAI API support
 - **Auth**: JWT with bcrypt password hashing
-- **Frontend**: Vanilla JavaScript with streaming response handling
+- **Frontend**: React + TypeScript + Vite with streaming response handling
 - **Document Processing**: PyPDF2, python-docx, character-based chunking
 - **Testing**: pytest with 50+ comprehensive test cases
 - **Deployment**: Docker support with multi-provider LLM flexibility
