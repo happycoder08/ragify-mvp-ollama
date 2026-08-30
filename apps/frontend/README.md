@@ -140,4 +140,4 @@ npm --prefix apps/frontend run test -- --run
 - The app uses the backend’s `POST /api/query` flow and streams final results via SSE.
 - When `VITE_DEMO_MODE=true`, the UI is tuned for presentation without removing core evidence logic.
 
-For backend setup and retrieval behavior, see [apps/backend/README.md](apps/backend/README.md). For the monorepo-wide workflow, see the root [README.md](../../README.md).
+For backend setup and retrieval behavior, see [../backend/README.md](../backend/README.md). For the monorepo-wide workflow, see the root [README.md](../../README.md).

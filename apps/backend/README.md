@@ -168,7 +168,7 @@ ollama pull llama3
 npm run dev:backend
 ```
 
-For the full stack, see the root README and the frontend README in [apps/frontend/README.md](apps/frontend/README.md).
+For the full stack, see the root [README.md](../../README.md) and the frontend docs in [../frontend/README.md](../frontend/README.md).
 
 # Run mock tests (no external dependencies)
 LLM_PROVIDER=mock pytest test_integration.py -v
