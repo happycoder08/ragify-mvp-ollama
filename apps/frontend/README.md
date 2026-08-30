@@ -1,65 +1,143 @@
-# RAGify Frontend (React + TypeScript + Vite)
+# RAGify Frontend
 
-This app contains the RAGify frontend built with React, TypeScript, and Vite. It is part of the root monorepo and proxies `/api` and `/health` requests to the FastAPI backend at `http://localhost:8000` during development.
+This frontend is the user-facing layer for the RAGify monorepo. It is built with React 18, TypeScript, and Vite, and it connects to the FastAPI backend over the local development API at `http://localhost:8000`.
 
-Quick start
+## Architecture
+
+```text
+User Browser
+    │
+    ▼
+React 18 + TypeScript App (apps/frontend)
+    │
+    ├─ Query page / chat flow
+    ├─ Docs page / selected document filtering
+    ├─ Evidence panel / citation review
+    ├─ Demo UI / readiness checks
+    └─ SSE streaming client
+    │
+    ▼
+FastAPI backend
+    ├─ /api/query
+    ├─ /api/upload
+    ├─ /api/documents
+    └─ /api/system/config
 ```
-# from the repository root
-Push-Location apps/frontend
+
+## Stack
+
+- React 18
+- TypeScript
+- Vite for local development and build output
+- Vitest for frontend unit testing
+- SSE streaming client (`src/sse.ts`) for token-by-token answers
+
+## Application Structure
+
+```text
+apps/frontend/
+├── src/
+│   ├── api.ts               # API helper functions
+│   ├── sse.ts               # SSE query streaming client
+│   ├── contracts/           # API response types
+│   ├── pages/               # main pages and UI panels
+│   ├── utils/               # answer mode, selection, auth helpers
+│   ├── App.tsx              # route composition
+│   └── main.tsx             # app bootstrap
+├── package.json             # frontend scripts
+├── vite.config.ts           # Vite config
+├── vitest.config.ts         # Vitest config
+└── README.md                # this file
+```
+
+## Quick Start
+
+### Install and run from the repo root
+
+```bash
 npm install
-
-# start dev server with HMR
 npm run dev
+```
 
-# build production bundle
-npm run build
+### Run frontend only
 
-# preview production build locally
-npm run preview
-
-# run unit tests (Vitest)
-npx vitest run
-Pop-Location
-
-# Or run the frontend from the root
+```bash
 npm --prefix apps/frontend run dev
 ```
 
-Environment flags
-- `VITE_DEMO_MODE=true` — enable demo mode UI (hides dev-only diagnostic banners but keeps Evidence/Sources visible). Can be set in a `.env.local` or exported before `npm run dev`.
-- `VITE_SHOW_DEVTOOLS=true` — enable dev tooling banners and debug counters. Also can be toggled via `?debug=1` URL param during development.
+### Production build
 
-Frontend architecture & behavior
-- Pages: `src/pages/` contains the main views. `Query.tsx` is the primary interactive page for asking questions.
-- SSE: `src/sse.ts` provides `queryWithSSE` used by `Query.tsx` to stream tokens and receive final responses.
-- Types: API types are in `src/contracts/types.ts` and used across components.
+```bash
+npm run build
+```
 
-Key UI controls added
-- Demo Control Bar (in `Query.tsx`, above the question input):
-  - Radio toggle: "All docs" vs "Selected docs".
-  - When "Selected docs" is chosen a multi-select appears listing uploaded documents (populated from `listDocuments`).
-  - On submit the request includes `doc_ids` only when "Selected docs" is enabled and at least one document is selected.
+### Preview production bundle
 
-- Evidence display (in `Query.tsx` + `EvidencePanel`):
-  - Default shows only the top evidence chunk.
-  - Small toggle link "Show all evidence (N)" reveals all evidence items (no internal changes to `EvidencePanel`).
+```bash
+npm --prefix apps/frontend run preview
+```
 
-- Answer Mode badge (in `Query.tsx` header):
-  - `NOT FOUND` when `refused === true`.
-  - `EXTRACTED` when `debugInfo.pipeline_marker` starts with `EXTRACTOR_`.
-  - `CITED` otherwise.
+## Environment Variables
 
-- Copy answer (in `Query.tsx` below the answer):
-  - "Copy answer" button copies `answerText`, appends source filenames and evidence headings, using `navigator.clipboard` and shows a transient "Copied!" indicator.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_DEMO_MODE` | `false` | Enables demo-mode UI gating and hides dev-only banners while keeping core evidence features visible |
+| `VITE_SHOW_DEVTOOLS` | `false` | Enables dev/debug UI overlays and counters |
+| `VITE_DEMO_Q1` | empty | Demo question 1 for demo mode |
+| `VITE_DEMO_Q2` | empty | Demo question 2 for demo mode |
 
-Developer UX and gating
-- Dev-only banners (invariant checks, mismatch warnings, and debug counters) are gated by the `VITE_DEMO_MODE` flag — demo mode hides these while preserving the underlying dev checks and logic.
+## Feature Summary
 
-Testing
-- Unit tests live under `src/pages/__tests__/`. Run them with `npx vitest run`.
+### Query experience
+- Question input and streaming answer display
+- SSE-backed answer rendering for token-by-token output
+- Final answer summary with evidence and sources
 
-Notes
-- Styling for new controls uses existing theme classes in `src/pages/Query.css` to keep visual consistency (e.g. `.clear-button`, `.inline-link-btn`).
-- No dev code was removed — rendering is gated only, so toggles and flags control visibility.
+### UI controls
+- Selected Docs filter: radio toggle for All docs vs Selected docs
+- Multi-select of uploaded documents when Selected docs is active
+- Evidence Panel toggle to show only the top evidence item or all evidence items
+- Answer Mode badge display: `EXTRACTED`, `CITED`, and `NOT FOUND`
+- Copy answer utility that copies the answer plus source and evidence context
 
-If you'd like, I can add a short "Frontend quick reference" section listing component entry points and data flow diagrams.
+### Demo and debug behavior
+- Demo mode allows curated question quick actions for presentations
+- Dev-only banners and mismatch warnings are hidden in demo mode but still remain in the logic
+- `?debug=1` can enable tooltips and diagnostic output in development builds
+
+## Key UI Logic
+
+The main interactive page lives in `src/pages/Query.tsx` and includes:
+
+- selected document filtering
+- stream handling and answer accumulation
+- evidence display and source rendering
+- answer mode classification
+- copy-to-clipboard interaction
+
+The answer mode logic is computed in `src/utils/computeAnswerMode.ts`:
+- `NOT_FOUND` when the system refuses or no support is found
+- `EXTRACTED` when the pipeline marker starts with `EXTRACTOR_`
+- `CITED` for normal citations-backed answers
+
+## Testing Matrix
+
+Run the frontend suite:
+
+```bash
+npm --prefix apps/frontend run test
+```
+
+Run it in one-shot CI mode:
+
+```bash
+npm --prefix apps/frontend run test -- --run
+```
+
+## Development Notes
+
+- The frontend is expected to run alongside the backend via the root `npm run dev` command.
+- The app uses the backend’s `POST /api/query` flow and streams final results via SSE.
+- When `VITE_DEMO_MODE=true`, the UI is tuned for presentation without removing core evidence logic.
+
+For backend setup and retrieval behavior, see [apps/backend/README.md](apps/backend/README.md). For the monorepo-wide workflow, see the root [README.md](../../README.md).
