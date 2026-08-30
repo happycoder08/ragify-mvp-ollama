@@ -1,398 +1,216 @@
-# RAGify AI
+# RAGify AI Monorepo
 
-RAGify is a full-stack document question-answering application. The repository is organized as a small monorepo with a FastAPI backend and a React/Vite frontend.
+RAGify is a full-stack document intelligence platform for grounded, multi-tenant question answering over uploaded knowledge bases. The repository combines a FastAPI backend for ingestion, retrieval, grounding, and orchestration with a React 18 + TypeScript + Vite frontend for interactive Q&A, evidence browsing, and result review.
 
-## Repository Structure
+## Monorepo Structure
 
 ```text
-apps/
-  backend/       FastAPI API, RAG pipeline, tests, and legacy static files
-  frontend/      React + TypeScript + Vite application
-package.json     Root development orchestration scripts
+.
+├── package.json              # root orchestration and shared scripts
+├── README.md                 # project overview and developer workflow
+├── apps/
+│   ├── backend/              # FastAPI + Python service, ChromaDB, Postgres, pytest
+│   │   ├── app/              # runtime, auth, schema, config, retrieval, guardrails
+│   │   ├── main.py           # API entrypoint and server startup
+│   │   ├── requirements.txt  # backend dependencies
+│   │   ├── tests/            # pytest suite
+│   │   └── ...               # ingestion scripts, diagnostics, demo assets
+│   └── frontend/             # React 18 + TypeScript + Vite client
+│       ├── src/              # UI pages, components, API client, SSE integration
+│       ├── package.json      # frontend scripts and dependencies
+│       └── ...               # Vitest tests, CSS, Vite config
+└── docker-compose.yml        # optional local infrastructure definition
 ```
 
-The frontend development server proxies `/api` and `/health` to the backend at `http://localhost:8000`.
+### Backend architecture (`apps/backend`)
+- FastAPI application with authenticated APIs, upload pipeline, and query orchestration
+- PostgreSQL for metadata, auth, tenant config, conversation records, and document status
+- ChromaDB for vector persistence under `apps/backend/vectorstore/`
+- Pytest-based validation for unit, integration, ground-truth, and retrieval tests
+- Ollama and optional OpenAI/mock providers for embeddings and chat responses
 
-## Prerequisites
+### Frontend architecture (`apps/frontend`)
+- React 18 application with TypeScript and Vite
+- Vitest suite for UI and utility validation
+- SSE client for streaming answer tokens from the backend
+- Interactive evidence display, document selection, mode badges, and copy support
 
+## Product Capabilities
+
+### Backend capabilities
+- Multi-tenancy with tenant-scoped document access and configuration
+- Grounding Gate that refuses or constrains answers when evidence is insufficient
+- MMR (Maximal Marginal Relevance) selection to diversify retrieved chunks
+- Deterministic extractors for structured facts and common operational questions
+- Question classification for broad vs. narrow queries and clarifications
+- PDF, DOCX, and TXT ingestion with chunking, indexing, and evidence tracking
+- Streaming query responses with sources, evidence snippets, and debug metadata
+
+### Frontend controls and UX
+- Selected Docs filter: All docs vs Selected docs radio toggle
+- Document multi-select appears when Selected docs is enabled
+- Evidence Panel toggles to show just the top chunk or all evidence items
+- Answer Mode badges: `EXTRACTED`, `CITED`, and `NOT FOUND`
+- Copy answer button for the final response, sources, and evidence details
+- Demo-mode UI controls and dev-only diagnostics gated by environment flags
+
+## Local Development Workflow
+
+### Prerequisites
 - Python 3.11+
-- Node.js and npm
-- PostgreSQL on `localhost:5432` (required for document uploads and document lists)
-- Ollama with `nomic-embed-text` and `llama3.2:1b` available
+- Node.js 18+ and npm
+- PostgreSQL available at `localhost:5432`
+- Ollama running locally with `nomic-embed-text` and a chat model such as `llama3` or `llama3.2:1b`
 
-To start PostgreSQL with Docker, start Docker Desktop and run:
-
-```powershell
-docker run --name ragify-postgres -e POSTGRES_USER=ragify -e POSTGRES_PASSWORD=ragify -e POSTGRES_DB=ragify_db -p 5432:5432 -d postgres:15
-```
-
-For native PostgreSQL setup, see [apps/backend/SETUP_WITHOUT_DOCKER.md](apps/backend/SETUP_WITHOUT_DOCKER.md).
-
-## Install
-
-From the repository root:
+### Windows PowerShell
 
 ```powershell
+# from the repository root
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r apps/backend/requirements.txt
 npm install
-Push-Location apps/frontend
-npm install
-Pop-Location
+
+# optional: start PostgreSQL with Docker
+# docker run --name ragify-postgres -e POSTGRES_USER=ragify -e POSTGRES_PASSWORD=ragify -e POSTGRES_DB=ragify_db -p 5432:5432 -d postgres:15
+
+# start backend + frontend together
+npm run dev
 ```
 
-Create `apps/backend/.env` when custom configuration is needed. Start with [apps/backend/.env.example](apps/backend/.env.example).
+### Unix/macOS
 
-## Run Both Apps
+```bash
+# from the repository root
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r apps/backend/requirements.txt
+npm install
 
-From the repository root:
+# optional: start PostgreSQL with Docker
+# docker run --name ragify-postgres -e POSTGRES_USER=ragify -e POSTGRES_PASSWORD=ragify -e POSTGRES_DB=ragify_db -p 5432:5432 -d postgres:15
 
-```powershell
+# start backend + frontend together
+npm run dev
+```
+
+### Root-level execution model
+The root script in [package.json](package.json) runs both services together with `concurrently`:
+
+```bash
 npm run dev
 ```
 
 This starts:
+- Backend: `python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000`
+- Frontend: `npm --prefix apps/frontend run dev`
 
-- Backend: `http://localhost:8000`
-- Frontend: `http://localhost:5173`
+Local endpoints:
+- Backend: http://localhost:8000
+- Frontend: http://localhost:5173
 
-The root scripts are defined in [package.json](package.json):
+## Environment Variables and Runtime Modes
 
-- `npm run dev:backend` starts Uvicorn from `apps/backend`, preserving relative storage paths.
-- `npm run dev:frontend` starts Vite from `apps/frontend`.
-- `npm run dev` runs both services with `concurrently`.
+### Primary environment variables
 
-Open `http://localhost:5173` to use the React application. The backend also exposes its legacy static pages under `http://localhost:8000/static/`.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RAGIFY_MODE` | `demo` | App execution mode: `dev`, `demo`, or `prod` |
+| `LLM_PROVIDER` | `ollama` | LLM backend: `ollama`, `openai`, or `mock` |
+| `DATABASE_URL` | `postgresql://ragify:ragify@localhost:5432/ragify_db` | PostgreSQL connection string |
+| `VITE_DEMO_MODE` | `false` | Enables demo-mode UI behavior in the frontend |
+| `LLM_MODEL` | `llama3.2:1b` | Chat model for the active provider |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `JWT_SECRET_KEY` | `your-secret-key-change-in-production` | Token signing secret |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
+| `JWT_EXPIRY_HOURS` | `24` | Token lifetime |
 
-## Backend
+### Execution modes
+- `dev`: full diagnostic visibility and more permissive development tuning
+- `demo`: optimized for safe, fast demonstrations with constrained output and retrieval behavior
+- `prod`: production-oriented defaults with stricter operational tuning
 
-The backend provides authentication, document ingestion, tenant isolation, ChromaDB retrieval, grounded answers, and streaming responses. See [apps/backend/README.md](apps/backend/README.md) for API capabilities and backend-specific details.
+Examples:
 
-Run backend tests from the root with:
+```bash
+# local development mode
+RAGIFY_MODE=dev npm run dev
 
-```powershell
-pytest apps/backend
+# demo mode
+RAGIFY_MODE=demo npm run dev
+
+# production mode
+RAGIFY_MODE=prod npm run dev
 ```
 
-Run the live upload/index/query regression while the backend is running:
+Frontend demo mode example:
 
-```powershell
-python apps/backend/scripts/e2e_upload_query.py
+```bash
+VITE_DEMO_MODE=true npm run dev
 ```
 
-For deterministic local responses, start the backend with `LLM_PROVIDER=mock`.
+## Degraded State Behavior
 
-## Frontend
+When PostgreSQL is disconnected or `DATABASE_URL` is invalid, the backend enters a degraded but non-fatal state. Startup logs warn that the app will continue running, and initialization proceeds with a warning if the database is unavailable.
 
-The frontend is a React, TypeScript, and Vite app. See [apps/frontend/README.md](apps/frontend/README.md) for UI behavior and testing details.
+Operational implications:
+- App startup continues rather than crashing the process
+- DB-backed metadata, document status, and conversation persistence may be unavailable
+- ChromaDB and the configured LLM provider can still keep the RAG pipeline functional if they are healthy
+- Access patterns that rely on database-backed tenant state may return partial data or `503` responses
 
-```powershell
-npm --prefix apps/frontend run build
+This behavior is intentional for local development and demo environments where vector search and LLM access remain usable while Postgres is temporarily offline.
+
+## Testing Matrix
+
+### Backend Pytest
+
+```bash
+# run the backend suite
+pytest apps/backend -q
+
+# deterministic mock-mode backend test run
+LLM_PROVIDER=mock pytest apps/backend -q
+
+# specific integration test with mock provider
+LLM_PROVIDER=mock pytest apps/backend/test_integration.py -v
+```
+
+### Frontend Vitest
+
+```bash
+# run the frontend suite
+npm --prefix apps/frontend run test
+
+# one-shot CI-style run
 npm --prefix apps/frontend run test -- --run
 ```
 
-## External Services
-
-- PostgreSQL stores application metadata, authentication, and document records.
-- ChromaDB persists embeddings under `apps/backend/vectorstore/`.
-- Ollama provides embeddings and chat responses at `http://localhost:11434`.
-
-## Reference Documentation
-#### Document Ingestion (`ingestion.py`)
-- **Format Support**: PDF, DOCX, TXT processing
-- **Chunking Strategy**: Character-based with configurable overlap
-- **Metadata Extraction**: Headers, source files, chunk indices
-- **Error Handling**: Robust processing with detailed error reporting
-
-#### Testing Suite
-- **Unit Tests**: Individual component validation
-- **Integration Tests**: End-to-end pipeline testing
-- **Mock Provider**: Deterministic testing without external dependencies
-- **CI/CD Support**: Automated testing for deployment pipelines
-
-## 🧪 Testing
-
-RAGify includes a comprehensive test suite with 50+ test cases covering all major functionality.
-
-### Test Categories
-- **Unit Tests**: Individual component validation (chunking, scoring, evidence extraction)
-- **Integration Tests**: End-to-end pipeline testing (upload → index → query → response)
-- **RAG Pipeline Tests**: Retrieval quality, context expansion, evidence validation
-- **Grounding Tests**: Evidence verification and citation accuracy
-- **Multi-tenant Tests**: Tenant isolation and access control
-- **API Tests**: Endpoint validation and error handling
-
-### Quick Test Commands
+## Useful Commands
 
 ```bash
-# Run all tests
-pytest
-
-# Run specific test categories
-pytest apps/backend/test_rag_pipeline.py -v          # RAG pipeline validation
-pytest apps/backend/test_grounding_gate.py -v        # Evidence verification
-pytest apps/backend/test_integration.py -v           # End-to-end testing
-
-# Run with coverage
-pytest --cov=apps/backend/app --cov-report=html
-
-# Run mock tests (no external dependencies)
-LLM_PROVIDER=mock pytest apps/backend/test_integration.py -v
-```
-
-### Test Coverage Areas
-- ✅ Document upload and processing (PDF, DOCX, TXT)
-- ✅ Vector indexing and retrieval
-- ✅ Broad vs. specific question handling
-- ✅ Adjacent chunk expansion for comprehensive answers
-- ✅ Evidence citation and grounding validation
-- ✅ Streaming response functionality
-- ✅ Multi-tenant isolation
-- ✅ Authentication and authorization
-- ✅ Error handling and edge cases
-
-See [apps/backend/TESTING_GUIDE.md](apps/backend/TESTING_GUIDE.md) for comprehensive testing instructions.
-
-## 🔧 Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RAGIFY_MODE` | `demo` | Global mode: `dev`, `demo`, or `prod` (see [CONFIG_GUIDE.md](apps/backend/archive/legacy-notes/CONFIG_GUIDE.md)) |
-| `DATABASE_URL` | `postgresql://ragify:ragify@localhost:5432/ragify_db` | PostgreSQL connection string |
-| `JWT_SECRET_KEY` | `your-secret-key-change-in-production` | Secret key for JWT signing |
-| `JWT_ALGORITHM` | `HS256` | JWT algorithm |
-| `JWT_EXPIRY_HOURS` | `24` | Token expiry time |
-| `LLM_PROVIDER` | `ollama` | LLM backend (`ollama`, `openai`, `mock`) |
-| `LLM_MODEL` | `llama3.2:1b` | LLM model name for the active provider |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `RAGIFY_OLLAMA_TIMEOUT` | `300` | Timeout for Ollama requests |
-| `OPENAI_API_KEY` | - | OpenAI API key (if using `openai` provider) |
-| `MOCK_UNGROUNDED` | `false` | Enable ungrounded answers for mock provider |
-| `RAGIFY_MOCK` | `0` | Enable mock mode (no Ollama/Chroma) |
-| `VECTOR_DIR` | `vectorstore/` | Directory where ChromaDB collections are persisted |
-| `RERANKER_PROVIDER` | `none` | Optional reranker backend (`none`, `jina`, `cohere`) |
-| `APP_MODE` | - | Set to `ci` to force CI/test wiring (mock providers, inline tasks) |
-
-### Modes (dev / demo / prod)
-
-RAGify centralizes most tuning in `RAGIFY_MODE` (see [CONFIG_GUIDE.md](apps/backend/archive/legacy-notes/CONFIG_GUIDE.md)):
-- **dev**: full features, verbose logging, generous limits (unlimited tokens, more chunks), best for development and debugging.
-- **demo** (default): optimized for fast, safe responses (smaller token budget, fewer chunks, stricter thresholds) for live demos.
-- **prod**: balanced quality/speed with tighter defaults, reranking enabled by default, suitable for production.
-
-You can inspect the active config at runtime via `GET /api/system/config`, and still override specific settings with env vars (for example `LLM_PROVIDER`, `LLM_MODEL`, or `RAGIFY_OLLAMA_TIMEOUT`).
-
-For a concise, up-to-date summary of each mode, usage examples, and best practices, see [CONFIG_GUIDE.md](apps/backend/archive/legacy-notes/CONFIG_GUIDE.md).
-
-### LLM Provider Options
-
-RAGify supports multiple LLM backends via the `LLM_PROVIDER` environment variable:
-
-- **`ollama`** (default): Local Ollama instance
-  - Requires running Ollama server
-  - Models: `nomic-embed-text` (embeddings), `llama3` (chat)
-  - Best for: Local development, privacy-focused deployments
-
-- **`openai`**: OpenAI API
-  - Requires `OPENAI_API_KEY` environment variable
-  - Models: `text-embedding-3-small` (embeddings), `gpt-4` (chat)
-  - Best for: Production deployments, cloud hosting
-
-- **`mock`**: Mock provider for testing
-  - No external dependencies required
-  - Returns deterministic keyword-based responses
-  - Supports grounded and ungrounded modes (`MOCK_UNGROUNDED=true`)
-  - Best for: CI/CD pipelines, integration tests
-  - See [CI Testing Guide](apps/backend/archive/legacy-notes/CI_TESTING.md) for details
-
-**Example:**
-```bash
-# Use Ollama (default)
-LLM_PROVIDER=ollama npm run dev:backend
-
-# Use OpenAI
-export OPENAI_API_KEY=sk-...
-LLM_PROVIDER=openai npm run dev:backend
-
-# Use mock provider for testing
-LLM_PROVIDER=mock pytest apps/backend/test_integration.py -v
-```
-
-
-### Adding New Tenants
-
-Edit `apps/backend/app/tenant_config.py`:
-
-```python
-TENANT_CONFIGS = {
-    "new_tenant": {
-        "tenant_id": "new_tenant",
-        "title": "New Tenant Name",
-        "primary_color": "#6366f1",
-        "logo_url": "https://example.com/logo.png",
-        "disclaimer": "Custom disclaimer text"
-    }
-}
-```
-
-Then add user in `apps/backend/app/auth.py`:
-
-```python
-USERS_DB = {
-    "new_user": {
-        "username": "new_user",
-        "hashed_password": bcrypt.hashpw("password".encode(), bcrypt.gensalt(12)).decode(),
-        "tenant_id": "new_tenant"
-    }
-}
-```
-
-## 🎯 Advanced Capabilities
-
-### Intelligent Question Handling
-
-RAGify automatically adapts its retrieval strategy based on question type:
-
-**Broad Questions** (e.g., "What do I do on my first day?")
-- Expands context with adjacent chunks (±2 indices)
-- Includes "First Day" and "Checklist" sections automatically
-- Ensures minimum 1500+ characters of context
-- Provides numbered checklists with evidence citations
-
-**Specific Questions** (e.g., "What is the wifi password?")
-- Uses focused retrieval (6 chunks)
-- Leverages deterministic extractors for common queries
-- Provides direct, evidence-based answers
-
-**Deterministic Extractors** for common HR/IT questions:
-- **Badge Pickup**: "Where do I pick up my badge?" → "BADGE_PICKUP: Available at reception/security desk"
-- **Manager Name**: "Who is my manager?" → "MANAGER_NAME: [Extracted Name]"
-- **Reception Location**: "Where is reception?" → "RECEPTION_LOCATION: Main lobby/front desk"
-
-### Evidence & Grounding
-
-- **Citation Tracking**: Every response includes `(CHUNK_ID=<id>)` references
-- **Anchor Detection**: Identifies time slots, numeric values, and key terms
-- **Grounding Validation**: Ensures answers are based only on indexed documents
-- **Source Attribution**: Lists all contributing documents with snippets
-
-### Use Cases
-
-**HR Onboarding**: Comprehensive first-day checklists with time-specific instructions
-**IT Support**: Wifi passwords, software installation guides, troubleshooting steps
-**Policy Documentation**: Company policies with specific rule extraction
-**Training Materials**: Step-by-step procedures with prerequisite identification
-**FAQ Systems**: Natural language answers with source document references
-
-## 📊 Database Schema
-
-### Document Model
-```sql
-CREATE TABLE documents (
-    id SERIAL PRIMARY KEY,
-    tenant_id VARCHAR NOT NULL,
-    filename VARCHAR NOT NULL,
-    file_path VARCHAR NOT NULL,
-    status VARCHAR NOT NULL,  -- 'indexing', 'indexed', 'failed'
-    error_message TEXT,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX idx_tenant_id ON documents(tenant_id);
-CREATE INDEX idx_status ON documents(status);
-```
-
-## 🔐 Security Considerations
-
-### Production Deployment Checklist
-- [ ] Change all default passwords in `apps/backend/app/auth.py`
-- [ ] Set strong `JWT_SECRET_KEY` (min 32 characters)
-- [ ] Use environment variables for all secrets
-- [ ] Enable HTTPS/TLS for all connections
-- [ ] Set up proper PostgreSQL user permissions
-- [ ] Configure CORS for specific domains only
-- [ ] Implement rate limiting on API endpoints
-- [ ] Set up log monitoring and alerting
-- [ ] Regular security audits and updates
-- [ ] Backup database regularly
-
-## 🐛 Troubleshooting
-
-### Database Connection Issues
-```bash
-# Test database connection
-psql -h localhost -U ragify -d ragify_db
-
-# Check if database is running
-docker ps | grep postgres
-```
-
-### Ollama Issues
-```bash
-# Check if Ollama is running
-curl http://localhost:11434/api/tags
-
-# Restart Ollama service
-# (depends on your installation method)
-```
-
-### Authentication Issues
-- Clear browser localStorage and try logging in again
-- Check JWT token expiry (default 24 hours)
-- Verify credentials in `apps/backend/app/auth.py`
-
-## 📝 Development
-
-### Running in Mock Mode (No External Dependencies)
-```bash
-$env:RAGIFY_MOCK="1"
+# backend only
 npm run dev:backend
+
+# frontend only
+npm run dev:frontend
+
+# frontend production build
+npm run build
+
+# backend tests
+npm run test:backend
+
+# frontend Vitest
+npm run test:frontend
 ```
 
-### Database Migrations
-```python
-# In Python shell
-from apps.backend.app.database import init_db
-init_db()  # Creates all tables
-```
+## Notes
 
+- The standard developer workflow is the root `npm run dev` command.
+- The frontend proxies API requests to the backend at `http://localhost:8000` during development.
+- The backend owns ingestion, indexing, grounding, and retrieval; the frontend owns interaction design, evidence display, and user assistance.
+- For deterministic local automation with no Ollama dependency, use `LLM_PROVIDER=mock`.
 
-## 📄 License
+For implementation depth on the backend, see [apps/backend/README.md](apps/backend/README.md). For frontend UX, controls, and SSE flow, see [apps/frontend/README.md](apps/frontend/README.md).
 
-This project is part of the RAGify MVP and is intended for demonstration and educational purposes.
-
-## 🔗 Tech Stack
-
-- **Backend**: FastAPI 0.100+ with async streaming support
-- **Database**: PostgreSQL 15+ with SQLAlchemy ORM
-- **Vector DB**: ChromaDB <0.4.0 with tenant-scoped collections
-- **AI Models**: Ollama (nomic-embed-text, llama3) + OpenAI API support
-- **Auth**: JWT with bcrypt password hashing
-- **Frontend**: React + TypeScript + Vite with streaming response handling
-- **Document Processing**: PyPDF2, python-docx, character-based chunking
-- **Testing**: pytest with 50+ comprehensive test cases
-- **Deployment**: Docker support with multi-provider LLM flexibility
-
-### RAG Pipeline Features
-
-#### Retrieval
-- **Hybrid Scoring**: Lexical overlap + semantic similarity ranking
-- **MMR Selection**: Maximal Marginal Relevance for diverse context
-- **Adjacent Expansion**: Automatic chunk inclusion for key sections
-- **Fallback Rewriting**: Query enhancement for better document matching
-
-#### Generation
-- **Evidence-Based**: Strict citation requirements with chunk ID tracking
-- **Context-Aware**: Minimum length thresholds (1500+ chars for broad questions)
-- **Streaming Output**: Real-time response generation
-- **Grounding Validation**: Evidence verification with anchor type detection
-
-#### Intelligence
-- **Question Classification**: Broad vs. specific question detection
-- **Deterministic Extractors**: Specialized handling for common queries
-- **Anchor Detection**: Time and numeric pattern recognition
-- **Coverage Gates**: Quality assurance for response completeness
-When PostgreSQL is unavailable, the backend starts in degraded mode. Health checks and some existing Chroma queries may work, but document uploads and document listing will not.
