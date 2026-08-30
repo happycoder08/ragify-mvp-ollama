@@ -395,17 +395,19 @@ init_db()  # Creates all tables
 
 ## 📚 Additional Documentation
 
-- [PHASE1_SUMMARY.md](PHASE1_SUMMARY.md) - Complete Phase 1 implementation details
+The project keeps detailed historical notes in the archive, while the active docs remain in the top-level backend folder.
+
 - [TESTING_GUIDE.md](TESTING_GUIDE.md) - Comprehensive testing manual with 50+ test cases
 - [SETUP_WITHOUT_DOCKER.md](SETUP_WITHOUT_DOCKER.md) - Alternative setup options
-- [CI_TESTING.md](CI_TESTING.md) - CI/CD testing guide with mock provider
-- [GROUNDING_GATE_SUMMARY.md](GROUNDING_GATE_SUMMARY.md) - Evidence validation system
-- [SSE_IMPLEMENTATION.md](SSE_IMPLEMENTATION.md) - Streaming response implementation
-- [ASYNC_INGESTION.md](ASYNC_INGESTION.md) - Document processing pipeline
-- [EMBEDDER_IMPLEMENTATION.md](EMBEDDER_IMPLEMENTATION.md) - Embedding and retrieval system
-- [BRANCH_STATUS.md](BRANCH_STATUS.md) - Current development status
-- [CONVERSATION_SUPPORT.md](CONVERSATION_SUPPORT.md) - Multi-turn conversation features
-- [GUARDRAILS.md](GUARDRAILS.md) - Safety and quality controls
+- [archive/legacy-notes/PHASE1_SUMMARY.md](archive/legacy-notes/PHASE1_SUMMARY.md) - Complete Phase 1 implementation details
+- [archive/legacy-notes/CI_TESTING.md](archive/legacy-notes/CI_TESTING.md) - CI/CD testing guide with mock provider
+- [archive/legacy-notes/GROUNDING_GATE_SUMMARY.md](archive/legacy-notes/GROUNDING_GATE_SUMMARY.md) - Evidence validation system
+- [archive/legacy-notes/SSE_IMPLEMENTATION.md](archive/legacy-notes/SSE_IMPLEMENTATION.md) - Streaming response implementation
+- [archive/legacy-notes/ASYNC_INGESTION.md](archive/legacy-notes/ASYNC_INGESTION.md) - Document processing pipeline
+- [archive/legacy-notes/EMBEDDER_IMPLEMENTATION.md](archive/legacy-notes/EMBEDDER_IMPLEMENTATION.md) - Embedding and retrieval system
+- [archive/legacy-notes/BRANCH_STATUS.md](archive/legacy-notes/BRANCH_STATUS.md) - Current development status
+- [archive/legacy-notes/CONVERSATION_SUPPORT.md](archive/legacy-notes/CONVERSATION_SUPPORT.md) - Multi-turn conversation features
+- [archive/legacy-notes/GUARDRAILS.md](archive/legacy-notes/GUARDRAILS.md) - Safety and quality controls
 
 ## 🤝 Contributing
 

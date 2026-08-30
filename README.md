@@ -212,5 +212,16 @@ npm run test:frontend
 - The backend owns ingestion, indexing, grounding, and retrieval; the frontend owns interaction design, evidence display, and user assistance.
 - For deterministic local automation with no Ollama dependency, use `LLM_PROVIDER=mock`.
 
+## 📚 Additional Documentation
+
+- [apps/backend/README.md](apps/backend/README.md) - Backend architecture, APIs, runtime modes, and testing
+- [apps/frontend/README.md](apps/frontend/README.md) - Frontend architecture, SSE flow, and UI controls
+- [apps/backend/TESTING_GUIDE.md](apps/backend/TESTING_GUIDE.md) - Backend testing guide and validation workflow
+- [apps/backend/SETUP_WITHOUT_DOCKER.md](apps/backend/SETUP_WITHOUT_DOCKER.md) - Alternative local setup instructions
+- [apps/backend/archive/legacy-notes/PHASE1_SUMMARY.md](apps/backend/archive/legacy-notes/PHASE1_SUMMARY.md) - Historical implementation summary
+- [apps/backend/archive/legacy-notes/CI_TESTING.md](apps/backend/archive/legacy-notes/CI_TESTING.md) - CI testing notes and mock-provider setup
+- [apps/backend/archive/legacy-notes/GROUNDING_GATE_SUMMARY.md](apps/backend/archive/legacy-notes/GROUNDING_GATE_SUMMARY.md) - Grounding gate documentation
+- [apps/backend/archive/legacy-notes/SSE_IMPLEMENTATION.md](apps/backend/archive/legacy-notes/SSE_IMPLEMENTATION.md) - Streaming implementation details
+
 For implementation depth on the backend, see [apps/backend/README.md](apps/backend/README.md). For frontend UX, controls, and SSE flow, see [apps/frontend/README.md](apps/frontend/README.md).
 
